@@ -1,0 +1,247 @@
+.\" Man page for celeritas.
+.TH CELERITAS 1 "2026" "celeritas" "User Commands"
+.SH NAME
+celeritas \- a minimal terminal emulator with its own window
+.SH SYNOPSIS
+.B celeritas
+[\fB\-\-title\fR=\fINAME\fR]
+[\fB\-\-class\fR=\fIINSTANCE\fR[,\fIGENERAL\fR]]
+[\fB\-e\fR \fIPROGRAM\fR [\fIARGS\fR...]]
+.SH DESCRIPTION
+.B celeritas
+opens a window and runs your shell in it, on a pseudo-terminal. It draws the shell's output with OpenGL and sends your keys back to the shell. Close the window to quit.
+.PP
+Settings come from a Lua file; see
+.B CONFIGURATION
+below. Command-line options override the file.
+.SH OPTIONS
+.TP
+.BR \-t ", " \-\-title =\fINAME\fR
+Set the window title. The default is "Celeritas".
+.TP
+.BR \-\-class =\fIINSTANCE\fR[,\fIGENERAL\fR]
+Set the window class, which window managers match rules against. On X11 these are the instance and general names; on Wayland the general name is the app id. With one name, it is used for both. The default is "Celeritas".
+.TP
+.BR \-e ", " \-\-command " \fIPROGRAM\fR [\fIARGS\fR...]"
+Run
+.I PROGRAM
+with
+.IR ARGS ,
+instead of the shell. Everything after
+.B \-e
+is passed to the program, so this option must come last.
+.SH KEYS
+.TP
+.B Ctrl+Shift+C
+Copy the selection to the clipboard.
+.TP
+.B Ctrl+V
+Paste from the clipboard.
+.TP
+.B Shift+PageUp, Shift+PageDown
+Scroll the scrollback by a page. Not used on the alternate screen.
+.TP
+.B Ctrl+Shift+Space
+Turn vi mode on or off.
+.PP
+Ctrl\-C and the other keys are sent to the shell. Double-click selects a word, triple-click selects a line, and Alt+drag selects a rectangle. Dragging out a selection also sets the X11 primary selection, which the middle button pastes by default.
+.SH VI MODE
+Vi mode moves a cursor over the scrollback. While it is on, keys do not reach the shell.
+.TP
+.B h j k l, arrow keys
+Move the cursor.
+.TP
+.B 0, $, Home, End
+Move to the start or end of the line.
+.TP
+.B g, G
+Move to the top or bottom of the scrollback.
+.TP
+.B PageUp, PageDown
+Move by a page.
+.TP
+.B v
+Start a selection at the cursor, or cancel the one being made.
+.TP
+.B y
+Copy the selection and stop selecting.
+.TP
+.B Escape, i
+Leave vi mode.
+.SH CONFIGURATION
+Settings are read from
+.I $XDG_CONFIG_HOME/celeritas/celeritas.lua
+or, if
+.B XDG_CONFIG_HOME
+is unset,
+.IR ~/.config/celeritas/celeritas.lua .
+If the file does not exist, celeritas creates it with the default settings on first launch. The file is Lua code that returns a table, grouped into sections. Anything left out uses its default. A file with errors prints a message and falls back to the defaults.
+.PP
+The file is changed while celeritas runs: it is read again within a second. The font, the window size and whether the window is transparent take effect only after a restart. The
+.BR shell ,
+.B env
+and
+.B working_directory
+settings apply to the next shell started.
+.PP
+Colours are written as
+.B 0xRRGGBB
+or
+.BR #RRGGBB .
+.PP
+The built-in defaults are in the source file
+.IR dist/celeritas.lua .
+.SS window
+.TP
+.B title
+Window title (default "Celeritas").
+.TP
+.B decorations
+Whether the window has a title bar and borders (default true).
+.TP
+.B decorations_theme_variant
+"Dark" or "Light" window decorations. Unset follows the system.
+.TP
+.B opacity
+From 0.0 to 1.0. Only the background becomes see-through (default 1.0).
+.TP
+.B padding
+A table with
+.B x
+and
+.B y
+giving blank space around the grid, in logical pixels (default 0).
+.TP
+.B dynamic_padding
+Share any spare window space evenly around the grid (default false).
+.TP
+.B class
+A table with
+.B instance
+and
+.B general
+names, as for
+.BR \-\-class .
+.TP
+.B dimensions.columns, dimensions.lines
+The starting size in cells (default 80 by 24). A tiling window manager may resize the window.
+.SS font
+.TP
+.B size
+Font size in points (default 14).
+.TP
+.B normal, bold, italic, bold_italic
+Each a table with
+.B family
+and
+.B style
+to use a specific face. Unset faces are found from the normal font. Italic text uses the font's own italic face, or else the first installed monospace font that has one. Without any italic face, italic text uses the regular face and bold italic uses the bold face.
+.SS colors
+.B primary.background
+and
+.B primary.foreground
+set the default colours. The
+.B normal
+and
+.B bright
+tables set the eight ANSI colours each. Also
+.B draw_bold_text_with_bright_colors
+(default true).
+.SS cursor
+.TP
+.B style
+"Block", "Underline" or "Beam" (default "Block").
+.TP
+.B vi_mode_style
+The cursor shape in vi mode, or "None" to keep the normal shape (default "None").
+.TP
+.B thickness
+The underline and beam thickness as a fraction of the cell (default 0.15).
+.TP
+.B unfocused_hollow
+Draw a block cursor as an outline while the window is unfocused (default true).
+.SS scrolling
+.TP
+.B history
+Lines of scrollback kept; 0 turns it off (default 10000).
+.TP
+.B multiplier
+Lines scrolled per mouse-wheel notch (default 3).
+.SS selection
+.TP
+.B save_to_clipboard
+Copy a selection to the clipboard as soon as it is dragged out (default false).
+.TP
+.B semantic_escape_chars
+Characters that end a word for double-click selection. The default is common punctuation and brackets, plus space and tab.
+.SS mouse
+.TP
+.B hide_when_typing
+Hide the pointer while typing (default false).
+.TP
+.B bindings
+A list of
+.BI "{ mouse = " "\(dqMiddle\(dq" ", action = " ACTION " }"
+entries. The only mouse button is "Middle". Actions are
+.BR PasteSelection " (the default), " Paste ", and " None .
+.SS keyboard
+.B bindings
+is a list of entries, each
+.BI "{ key = " KEY ", mods = " MODS ", action = " ACTION " }"
+or
+.BI "{ key = " KEY ", mods = " MODS ", chars = " TEXT " }"
+.RB ( mods
+is optional). A
+.B chars
+entry sends the text to the shell. Actions are
+.BR Copy ", " Paste ", " ScrollPageUp ", " ScrollPageDown ", " ScrollLineUp ", " ScrollLineDown ", " ScrollToTop ", " ScrollToBottom ", " ToggleViMode ", and " None
+(swallow the key). Later entries take precedence over the built-in keys.
+.SS general
+.TP
+.B working_directory
+Directory the shell starts in (default: where celeritas was started).
+.TP
+.B live_config_reload
+Re-read the file when it changes (default true).
+.SS env
+A table of extra environment variables for the shell.
+.SS shell
+The shell to run (default
+.BR $SHELL ).
+.SS scrolling
+See
+.B scrolling
+above.
+.SH EXAMPLE
+.nf
+return {
+    window = { opacity = 0.9, padding = { x = 8, y = 8 } },
+    font = { size = 12 },
+    scrolling = { history = 10000 },
+    keyboard = {
+        bindings = {
+            { key = "L", mods = "Control", chars = "\\f" },
+        },
+    },
+}
+.fi
+.SH ENVIRONMENT
+.TP
+.B SHELL
+The shell to run, unless
+.B shell
+is set in the configuration.
+.TP
+.B XDG_CONFIG_HOME
+Where the configuration file is kept.
+.TP
+.B CELERITAS_DEBUG
+When set, traces key presses, selection and clipboard use to standard error.
+.SH FILES
+.TP
+.I ~/.config/celeritas/celeritas.lua
+The configuration file.
+.SH SEE ALSO
+.BR sh (1)
+.SH LICENSE
+celeritas is free software, released under the GNU General Public License, version 3 or later. It comes with no warranty.
