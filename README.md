@@ -71,7 +71,7 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua). The 
 3. **Window and input** (`winit` and `glutin`, `src/app.rs`, `src/input.rs`): creates the window and OpenGL context, and turns key presses and mouse input into bytes for the shell.
 4. **Renderer** (`glow`, `src/renderer.rs`): draws the grid each frame from one vertex list, with glyphs in a texture atlas.
 5. **Fonts** (`crossfont`, `src/font.rs`): loads the four faces through fontconfig. Characters missing from the font fall back to other installed fonts, which covers Nerd Font icons.
-6. **Clipboard** (`copypasta`, `src/clipboard.rs`): the X11 clipboard, which XWayland shares with Wayland applications.
+6. **Clipboard** (`wl-clipboard-rs` and `copypasta`, `src/clipboard.rs`): the Wayland clipboard on Wayland, so text copied in other applications pastes with Ctrl+V. The X11 clipboard is set too, for X11 applications.
 7. **Configuration** (`mlua`, `src/config.rs`): reads the Lua file at startup and again when it changes.
 
 ## License

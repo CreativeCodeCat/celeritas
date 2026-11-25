@@ -7,6 +7,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 copypasta = "0.10"
+wl-clipboard-rs = "0.9"  # Wayland clipboard, used when WAYLAND_DISPLAY is set
 crossfont = "0.9"
 glow = "0.18"
 glutin = "0.32"
