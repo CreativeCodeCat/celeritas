@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="dist/celeritas.svg" width="128" alt="Celeritas icon">
+</p>
+
 # Celeritas
 
 A terminal emulator written in Rust, using winit and OpenGL for the window and vte for parsing escape codes.

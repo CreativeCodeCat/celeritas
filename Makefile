@@ -29,6 +29,7 @@ $(BIN): Cargo.toml Cargo.lock $(wildcard src/*.rs)
 
 MANDIR     := $(PREFIX)/share/man/man1
 DESKTOPDIR := $(PREFIX)/share/applications
+ICONDIR    := $(PREFIX)/share/icons/hicolor/scalable/apps
 
 install: install-bin install-man install-desktop
 
@@ -45,14 +46,16 @@ install-man:
 	@echo "Installed man page to $(DESTDIR)$(MANDIR)/$(NAME).1"
 
 install-desktop:
-	install -d "$(DESTDIR)$(DESKTOPDIR)"
+	install -d "$(DESTDIR)$(DESKTOPDIR)" "$(DESTDIR)$(ICONDIR)"
 	sed -e 's|@BINDIR@|$(BINDIR)|g' dist/$(NAME).desktop.in > "$(DESTDIR)$(DESKTOPDIR)/$(NAME).desktop"
-	@echo "Installed launcher to $(DESTDIR)$(DESKTOPDIR)/$(NAME).desktop"
+	install -m 644 dist/$(NAME).svg "$(DESTDIR)$(ICONDIR)/$(NAME).svg"
+	@echo "Installed launcher and icon to $(DESTDIR)$(PREFIX)"
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/$(NAME)"
 	rm -f "$(DESTDIR)$(MANDIR)/$(NAME).1"
 	rm -f "$(DESTDIR)$(DESKTOPDIR)/$(NAME).desktop"
+	rm -f "$(DESTDIR)$(ICONDIR)/$(NAME).svg"
 	@echo "Removed $(NAME) from $(DESTDIR)$(PREFIX)"
 
 clean:
