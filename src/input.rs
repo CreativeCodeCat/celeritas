@@ -10,6 +10,46 @@ pub struct Mods {
     pub alt: bool,
 }
 
+/// The name of a key as the configuration spells it (`"V"`, `"PageUp"`, `"Up"`, ...), or
+/// `None` for keys that have no name.
+pub fn key_name(key: &Key) -> Option<String> {
+    let name = match key {
+        Key::Character(s) => return Some(s.to_ascii_uppercase()),
+        Key::Named(named) => match named {
+            NamedKey::Enter => "Enter",
+            NamedKey::Tab => "Tab",
+            NamedKey::Space => "Space",
+            NamedKey::Escape => "Escape",
+            NamedKey::Backspace => "Backspace",
+            NamedKey::Delete => "Delete",
+            NamedKey::Insert => "Insert",
+            NamedKey::Home => "Home",
+            NamedKey::End => "End",
+            NamedKey::PageUp => "PageUp",
+            NamedKey::PageDown => "PageDown",
+            NamedKey::ArrowUp => "Up",
+            NamedKey::ArrowDown => "Down",
+            NamedKey::ArrowLeft => "Left",
+            NamedKey::ArrowRight => "Right",
+            NamedKey::F1 => "F1",
+            NamedKey::F2 => "F2",
+            NamedKey::F3 => "F3",
+            NamedKey::F4 => "F4",
+            NamedKey::F5 => "F5",
+            NamedKey::F6 => "F6",
+            NamedKey::F7 => "F7",
+            NamedKey::F8 => "F8",
+            NamedKey::F9 => "F9",
+            NamedKey::F10 => "F10",
+            NamedKey::F11 => "F11",
+            NamedKey::F12 => "F12",
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(name.to_string())
+}
+
 /// The bytes for a key press, or `None` if the key sends nothing.
 /// `text` is what the keyboard layout produced for the press, if anything.
 pub fn key_bytes(key: &Key, text: Option<&str>, mods: Mods) -> Option<Vec<u8>> {
@@ -123,6 +163,14 @@ mod tests {
     fn alt_prefixes_escape() {
         let m = Mods { alt: true, ..Mods::default() };
         assert_eq!(key_bytes(&ch("x"), Some("x"), m), Some(b"\x1bx".to_vec()));
+    }
+
+    #[test]
+    fn key_names_match_the_config_spelling() {
+        assert_eq!(key_name(&ch("v")).as_deref(), Some("V"));
+        assert_eq!(key_name(&Key::Named(NamedKey::PageUp)).as_deref(), Some("PageUp"));
+        assert_eq!(key_name(&Key::Named(NamedKey::ArrowUp)).as_deref(), Some("Up"));
+        assert_eq!(key_name(&Key::Named(NamedKey::Shift)), None);
     }
 
     #[test]

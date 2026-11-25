@@ -22,9 +22,9 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes};
 
 use crate::clipboard::Clipboard;
-use crate::config::Config;
+use crate::config::{BindingAction, Config};
 use crate::font::FontSet;
-use crate::input::{key_bytes, Mods};
+use crate::input::{key_bytes, key_name, Mods};
 use crate::pty::{Pty, PtyMsg};
 use crate::renderer::{Overlay, Renderer};
 use crate::screen::MouseEncoding;
@@ -243,7 +243,46 @@ impl App {
         let _ = self.pty.write(bytes);
     }
 
+    /// The action of the last configured binding matching this key and modifiers.
+    fn binding_for(&self, key: &Key) -> Option<BindingAction> {
+        let name = key_name(key)?;
+        let mods = self.mods;
+        self.config
+            .bindings
+            .iter()
+            .rev()
+            .find(|b| b.mods == mods && b.key.eq_ignore_ascii_case(&name))
+            .map(|b| b.action.clone())
+    }
+
+    fn run_action(&mut self, action: BindingAction) {
+        match action {
+            BindingAction::Copy => self.copy_selection(),
+            BindingAction::Paste => self.paste(),
+            BindingAction::ScrollPageUp | BindingAction::ScrollPageDown => {
+                let page = self.screen.rows.saturating_sub(1).max(1) as isize;
+                let lines = if action == BindingAction::ScrollPageUp { page } else { -page };
+                self.screen.scroll_view(lines);
+            }
+            BindingAction::ScrollLineUp => self.screen.scroll_view(1),
+            BindingAction::ScrollLineDown => self.screen.scroll_view(-1),
+            BindingAction::ScrollToTop => self.screen.scroll_to_top(),
+            BindingAction::ScrollToBottom => self.screen.reset_view(),
+            BindingAction::Nothing => {}
+            BindingAction::Chars(bytes) => {
+                self.screen.reset_view();
+                self.write(&bytes);
+            }
+        }
+        self.request_redraw();
+    }
+
     fn key_press(&mut self, key: &Key, text: Option<&str>) {
+        // Configured bindings come first, so they can replace the built-in keys.
+        if let Some(action) = self.binding_for(key) {
+            self.run_action(action);
+            return;
+        }
         let m = self.mods;
         let is_char = |want: &str| matches!(key, Key::Character(c) if c.eq_ignore_ascii_case(want));
 

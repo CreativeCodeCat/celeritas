@@ -12,6 +12,8 @@ use std::path::PathBuf;
 
 use mlua::{Lua, Table};
 
+use crate::input::Mods;
+
 /// The config written on first launch. It is the same as `Config::default()`.
 const DEFAULT_CONFIG: &str = include_str!("../dist/celeritas.lua");
 
@@ -41,6 +43,32 @@ pub enum CursorStyle {
     Underline,
     /// A bar along the left of the cell.
     Beam,
+}
+
+/// What a key binding does.
+#[derive(Clone, PartialEq, Debug)]
+pub enum BindingAction {
+    Copy,
+    Paste,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollLineUp,
+    ScrollLineDown,
+    ScrollToTop,
+    ScrollToBottom,
+    /// Swallow the key press so the shell never sees it.
+    Nothing,
+    /// Send these bytes to the shell.
+    Chars(Vec<u8>),
+}
+
+/// A key binding: a key, the modifiers that must be held, and what to do.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Binding {
+    /// The key, as `key_name` spells it (for example "V" or "PageUp").
+    pub key: String,
+    pub mods: Mods,
+    pub action: BindingAction,
 }
 
 /// An 8-bit RGB colour.
@@ -80,6 +108,8 @@ pub struct Config {
     /// becomes see-through.
     pub opacity: f32,
     pub cursor_style: CursorStyle,
+    /// Key bindings from `keyboard.bindings`. Later entries take precedence.
+    pub bindings: Vec<Binding>,
 }
 
 impl Default for Config {
@@ -122,6 +152,7 @@ impl Default for Config {
             scrollback: crate::screen::DEFAULT_HISTORY,
             opacity: 1.0,
             cursor_style: CursorStyle::Block,
+            bindings: Vec::new(),
         }
     }
 }
@@ -226,6 +257,14 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
         }
     }
 
+    if let Some(keyboard) = root.get::<Option<Table>>("keyboard")? {
+        if let Some(list) = keyboard.get::<Option<Table>>("bindings")? {
+            for entry in list.sequence_values::<Table>() {
+                config.bindings.push(read_binding(&entry?)?);
+            }
+        }
+    }
+
     if let Some(cursor) = root.get::<Option<Table>>("cursor")? {
         if let Some(style) = cursor.get::<Option<String>>("style")? {
             config.cursor_style = match style.to_ascii_lowercase().as_str() {
@@ -248,6 +287,52 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     }
 
     Ok(config)
+}
+
+/// Read one entry of `keyboard.bindings`.
+fn read_binding(entry: &Table) -> Result<Binding, Box<dyn Error>> {
+    let key = entry.get::<Option<String>>("key")?.ok_or("a key binding needs a key")?;
+    // Accept "ArrowUp" as well as "Up".
+    let key = match key.strip_prefix("Arrow") {
+        Some(direction) => direction.to_string(),
+        None => key,
+    };
+    let mods = parse_mods(&entry.get::<Option<String>>("mods")?.unwrap_or_default())?;
+    let action = match (entry.get::<Option<String>>("action")?, entry.get::<Option<String>>("chars")?) {
+        (Some(name), None) => parse_action(&name)?,
+        (None, Some(chars)) => BindingAction::Chars(chars.into_bytes()),
+        _ => return Err("a key binding needs either an action or chars".into()),
+    };
+    Ok(Binding { key, mods, action })
+}
+
+/// Parse "Control|Shift" and similar. An empty string means no modifiers.
+fn parse_mods(text: &str) -> Result<Mods, Box<dyn Error>> {
+    let mut mods = Mods::default();
+    for part in text.split('|').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "control" | "ctrl" => mods.ctrl = true,
+            "shift" => mods.shift = true,
+            "alt" | "option" => mods.alt = true,
+            other => return Err(format!("unknown modifier {other:?}").into()),
+        }
+    }
+    Ok(mods)
+}
+
+fn parse_action(name: &str) -> Result<BindingAction, Box<dyn Error>> {
+    Ok(match name.to_ascii_lowercase().as_str() {
+        "copy" => BindingAction::Copy,
+        "paste" => BindingAction::Paste,
+        "scrollpageup" => BindingAction::ScrollPageUp,
+        "scrollpagedown" => BindingAction::ScrollPageDown,
+        "scrolllineup" => BindingAction::ScrollLineUp,
+        "scrolllinedown" => BindingAction::ScrollLineDown,
+        "scrolltotop" => BindingAction::ScrollToTop,
+        "scrolltobottom" => BindingAction::ScrollToBottom,
+        "none" => BindingAction::Nothing,
+        other => return Err(format!("unknown action {other:?}").into()),
+    })
 }
 
 /// Read `font.<name> = { family = "...", style = "..." }`, if present.
@@ -369,6 +454,32 @@ mod tests {
         assert_eq!(config.opacity, 0.5);
         assert_eq!(config.cursor_style, CursorStyle::Beam);
         assert!(parse(r#"return { cursor = { style = "wiggly" } }"#).is_err());
+    }
+
+    #[test]
+    fn reads_key_bindings() {
+        let config = parse(
+            r#"return { keyboard = { bindings = {
+                 { key = "V", mods = "Control|Shift", action = "Paste" },
+                 { key = "L", mods = "Control", chars = "\f" },
+                 { key = "ArrowUp", mods = "Shift", action = "ScrollLineUp" },
+                 { key = "Q", action = "none" },
+               } } }"#,
+        )
+        .unwrap();
+        assert_eq!(config.bindings.len(), 4);
+        assert_eq!(config.bindings[0].action, BindingAction::Paste);
+        assert_eq!(config.bindings[0].mods, Mods { shift: true, ctrl: true, alt: false });
+        assert_eq!(config.bindings[1].action, BindingAction::Chars(vec![0x0c]));
+        assert_eq!(config.bindings[2].key, "Up");
+        assert_eq!(config.bindings[3].action, BindingAction::Nothing);
+    }
+
+    #[test]
+    fn bad_bindings_are_errors() {
+        assert!(parse(r#"return { keyboard = { bindings = { { key = "V", action = "Explode" } } } }"#).is_err());
+        assert!(parse(r#"return { keyboard = { bindings = { { key = "V", mods = "Hyper", action = "Copy" } } } }"#).is_err());
+        assert!(parse(r#"return { keyboard = { bindings = { { action = "Copy" } } } }"#).is_err());
     }
 
     #[test]

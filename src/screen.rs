@@ -185,6 +185,13 @@ impl Screen {
         self.view_offset = next.clamp(0, self.history.len() as isize) as usize;
     }
 
+    /// Scroll the view to the oldest row of history. Has no effect on the alternate screen.
+    pub fn scroll_to_top(&mut self) {
+        if !self.in_alt_screen() {
+            self.view_offset = self.history.len();
+        }
+    }
+
     /// Jump back to the live screen.
     pub fn reset_view(&mut self) {
         self.view_offset = 0;

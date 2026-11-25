@@ -60,6 +60,7 @@ Supported settings:
 - `shell`: the shell to run (default `$SHELL`)
 - `window`: `title`, `decorations`, `opacity` (0.0 to 1.0; only the default background becomes see-through), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
 - `cursor.style`: `"Block"`, `"Underline"` or `"Beam"`
+- `keyboard.bindings`: a list of `{ key, mods, action }` or `{ key, mods, chars }` entries. Actions are Copy, Paste, ScrollPageUp, ScrollPageDown, ScrollLineUp, ScrollLineDown, ScrollToTop, ScrollToBottom and None (swallow the key). `chars` sends the given text. Later entries take precedence over the built-in keys
 - `font.size`
 - `colors`: `primary.background` / `foreground`, the `normal` and `bright` ANSI colours, and `draw_bold_text_with_bright_colors`
 - `general.working_directory`
@@ -74,7 +75,7 @@ This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
 - Only the 1000, 1002 and 1003 mouse modes are supported
 - Italic text without a configured italic face is slanted in software, not drawn with a true italic. Set `font.italic` for a real one
-- Key bindings are fixed. Only the Alacritty options listed above are read; others are ignored
+- Only the Alacritty options listed above are read; others are ignored
 
 ## License
 

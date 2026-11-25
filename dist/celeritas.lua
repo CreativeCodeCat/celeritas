@@ -31,6 +31,17 @@ return {
     size = 14,
   },
 
+  -- Key bindings. An entry either runs an action or sends characters (chars).
+  -- Actions: Copy, Paste, ScrollPageUp, ScrollPageDown, ScrollLineUp,
+  -- ScrollLineDown, ScrollToTop, ScrollToBottom, None (swallow the key).
+  -- Modifiers: Control, Shift, Alt, joined with "|". Later entries win.
+  -- keyboard = {
+  --   bindings = {
+  --     { key = "V", mods = "Control|Shift", action = "Paste" },
+  --     { key = "L", mods = "Control", chars = "\\f" },
+  --   },
+  -- },
+
   scrolling = {
     -- Lines of scrollback kept above the screen (0 turns it off).
     history = 10000,
