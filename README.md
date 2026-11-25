@@ -1,6 +1,6 @@
 # Celeritas
 
-A minimal terminal emulator written in Rust. It opens its own window and runs your shell in it, so it doesn't need another terminal to run in.
+A terminal emulator written in Rust, using winit and OpenGL for the window and vte for parsing escape codes.
 
 The full reference for command-line options, configuration and key bindings is the man page: `man celeritas` (see [Install](#install)).
 
