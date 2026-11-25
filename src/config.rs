@@ -111,6 +111,7 @@ pub struct Config {
     /// Key bindings from `keyboard.bindings`. Later entries take precedence.
     pub bindings: Vec<Binding>,
     /// Window class as `(instance, general)`. Window managers match rules against it.
+    /// Defaults to `Celeritas`.
     pub class: Option<(String, String)>,
     /// Program to run instead of the shell, from `-e`. Empty means the shell.
     pub command: Vec<String>,
@@ -119,7 +120,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            title: "celeritas".to_string(),
+            title: "Celeritas".to_string(),
             decorations: true,
             columns: 80,
             lines: 24,
@@ -157,7 +158,7 @@ impl Default for Config {
             opacity: 1.0,
             cursor_style: CursorStyle::Block,
             bindings: Vec::new(),
-            class: None,
+            class: Some(("Celeritas".to_string(), "Celeritas".to_string())),
             command: Vec::new(),
         }
     }

@@ -12,7 +12,7 @@ return {
   -- shell = "/usr/bin/fish",
 
   window = {
-    title = "celeritas",
+    title = "Celeritas",
     decorations = true,
     dimensions = {
       columns = 80,
