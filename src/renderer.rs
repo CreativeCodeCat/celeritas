@@ -17,6 +17,8 @@ const ATLAS_SIZE: i32 = 2048;
 const MODE_SOLID: f32 = 0.0;
 /// Vertex mode: a glyph, whose alpha comes from the atlas.
 const MODE_GLYPH: f32 = 1.0;
+/// Horizontal shift of the top of an italic glyph, as a fraction of its height (about 11 degrees).
+const ITALIC_SKEW: f32 = 0.2;
 /// Floats per vertex: position (2), atlas coordinates (2), colour (4), mode (1).
 const FLOATS_PER_VERTEX: usize = 9;
 
@@ -229,11 +231,13 @@ impl Renderer {
                 // '\0' is the right half of a wide character; its glyph is drawn by the left half.
                 if cell.ch != ' ' && cell.ch != '\0' {
                     let style = FaceStyle::new(cell.bold, cell.italic);
-                    // A combining mark is drawn over its base character, at the same origin.
-                    for ch in std::iter::once(cell.ch).chain(cell.mark) {
+                    // Italic text is slanted in software when the font has no italic face.
+                    let skew = if self.fonts.slants(style) { ITALIC_SKEW } else { 0.0 };
+                    // Combining marks are drawn over their base character, at the same origin.
+                    for ch in std::iter::once(cell.ch).chain(cell.marks.into_iter().flatten()) {
                         if let Some(glyph) = self.glyph(ch, style) {
                             if glyph.width > 0.0 && glyph.height > 0.0 {
-                                push_quad(
+                                push_quad_skewed(
                                     &mut self.vertices,
                                     px + glyph.left,
                                     py + baseline - glyph.top,
@@ -242,6 +246,7 @@ impl Renderer {
                                     glyph.uv,
                                     rgba(fg, 1.0),
                                     MODE_GLYPH,
+                                    skew,
                                 );
                             }
                         }
@@ -383,14 +388,30 @@ fn alpha_mask(glyph: &crossfont::RasterizedGlyph) -> Vec<u8> {
 }
 
 /// Append two triangles covering a rectangle.
-#[allow(clippy::too_many_arguments)]
 fn push_quad(v: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], color: [f32; 4], mode: f32) {
+    push_quad_skewed(v, x, y, w, h, uv, color, mode, 0.0);
+}
+
+/// Like `push_quad`, but the top edge is shifted right by `skew * h` (for italics).
+#[allow(clippy::too_many_arguments)]
+fn push_quad_skewed(
+    v: &mut Vec<f32>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    uv: [f32; 4],
+    color: [f32; 4],
+    mode: f32,
+    skew: f32,
+) {
     let [u0, v0, u1, v1] = uv;
+    let top = skew * h;
     let corners = [
-        (x, y, u0, v0),
-        (x + w, y, u1, v0),
+        (x + top, y, u0, v0),
+        (x + top + w, y, u1, v0),
         (x + w, y + h, u1, v1),
-        (x, y, u0, v0),
+        (x + top, y, u0, v0),
         (x + w, y + h, u1, v1),
         (x, y + h, u0, v1),
     ];

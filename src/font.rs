@@ -33,6 +33,8 @@ impl FaceStyle {
 pub struct FontSet {
     rasterizer: Rasterizer,
     keys: [FontKey; 4],
+    synthetic_italic: bool,
+    synthetic_bold_italic: bool,
     size: Size,
     /// Width of one terminal cell, in pixels.
     pub cell_width: f32,
@@ -59,16 +61,19 @@ impl FontSet {
         };
 
         let family = normal_face.family.clone();
-        let load_variant = |rasterizer: &mut Rasterizer, configured: &Option<FontFace>, style: &str| {
+        // Returns the key, and whether a real face was loaded from the configuration.
+        let load_variant = |rasterizer: &mut Rasterizer, configured: &Option<FontFace>, style: &str| -> (FontKey, bool) {
             let wanted = configured.clone().unwrap_or_else(|| face(&family, style));
             match rasterizer.load_font(&desc(&wanted, style), size) {
-                Ok(key) => key,
-                Err(_) => normal,
+                Ok(key) => (key, configured.is_some()),
+                Err(_) => (normal, false),
             }
         };
-        let bold = load_variant(&mut rasterizer, &faces.bold, "Bold");
-        let italic = load_variant(&mut rasterizer, &faces.italic, "Italic");
-        let bold_italic = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic");
+        let (bold, _) = load_variant(&mut rasterizer, &faces.bold, "Bold");
+        // fontconfig returns a regular face for a style it lacks, so a real italic face
+        // only counts when the configuration names one.
+        let (italic, italic_real) = load_variant(&mut rasterizer, &faces.italic, "Italic");
+        let (bold_italic, bold_italic_real) = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic");
 
         let metrics = rasterizer.metrics(normal, size)?;
         // Some rasterizer setups report no line height or descent. Fall back to values
@@ -86,11 +91,22 @@ impl FontSet {
         Ok(FontSet {
             rasterizer,
             keys: [normal, bold, italic, bold_italic],
+            synthetic_italic: !italic_real,
+            synthetic_bold_italic: !bold_italic_real,
             size,
             cell_width,
             cell_height,
             baseline,
         })
+    }
+
+    /// Whether italic text in this style must be slanted in software.
+    pub fn slants(&self, style: FaceStyle) -> bool {
+        match style {
+            FaceStyle::Italic => self.synthetic_italic,
+            FaceStyle::BoldItalic => self.synthetic_bold_italic,
+            _ => false,
+        }
     }
 
     /// Rasterise one character in a face. `None` if the font system gives nothing for it.

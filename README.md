@@ -9,8 +9,8 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 - Scrollback history (mouse wheel, or Shift+PageUp/PageDown) and a separate alternate screen for full-screen programs
 - Mouse selection, copied with Ctrl+Shift+C; double-click selects a word, triple-click a line
 - Scroll regions (`CSI r`), insert and delete line, and reverse index
-- Mouse reporting for programs (vim, tmux): the 1000, 1002 and 1003 modes, with SGR (1006) or legacy encoding. Hold Shift to select text instead
-- Combining marks (accents) drawn over their base character
+- Mouse reporting for programs (vim, tmux): the 1000, 1002 and 1003 modes, with legacy, UTF-8 (1005), SGR (1006) or URXVT (1015) encoding. Hold Shift to select text instead
+- Combining marks (accents, up to two per character) drawn over their base character
 - Wide characters (CJK and most emoji) take two columns
 - Answers the terminal queries shells send at startup (for example, fish's device-attributes probe)
 - Paste with Ctrl-V; Ctrl-C is sent to the shell as an interrupt
@@ -71,9 +71,8 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 
 This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
-- Only one combining mark is kept per character
-- Only the 1000, 1002 and 1003 mouse modes and their SGR/legacy encodings are supported; UTF-8 (1005) and URXVT (1015) mouse encodings are not
-- Italic needs an italic face installed (set `font.italic` if fontconfig picks the wrong one)
+- Only the 1000, 1002 and 1003 mouse modes are supported
+- Italic text without a configured italic face is slanted in software, not drawn with a true italic. Set `font.italic` for a real one
 - Selection is by character cells, not blocks
 - Unsupported Alacritty options (key bindings, cursor style, opacity) are ignored
 

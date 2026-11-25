@@ -27,6 +27,7 @@ use crate::font::FontSet;
 use crate::input::{key_bytes, Mods};
 use crate::pty::{Pty, PtyMsg};
 use crate::renderer::{Overlay, Renderer};
+use crate::screen::MouseEncoding;
 use crate::screen::Screen;
 
 /// Lines moved per mouse-wheel notch.
@@ -190,6 +191,10 @@ impl App {
             }
         }
         let _ = gfx.surface.swap_buffers(&gfx.context);
+        if self.screenshot.is_some() {
+            // Keep drawing until the screenshot frame is reached.
+            gfx.window.request_redraw();
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -340,21 +345,7 @@ impl App {
     /// 2 right, 64 wheel up, 65 wheel down), plus 32 for motion. Columns and rows are
     /// zero-based view cells.
     fn report_mouse(&mut self, code: u8, col: usize, row: usize, release: bool) {
-        let bytes = if self.screen.mouse_sgr() {
-            let end = if release { 'm' } else { 'M' };
-            format!("\x1b[<{};{};{}{}", code, col + 1, row + 1, end).into_bytes()
-        } else {
-            // Legacy encoding: every value is offset by 32, and release is button 3.
-            let button = if release { 3 } else { code };
-            vec![
-                0x1b,
-                b'[',
-                b'M',
-                32 + button,
-                (32 + col + 1).min(255) as u8,
-                (32 + row + 1).min(255) as u8,
-            ]
-        };
+        let bytes = encode_mouse(self.screen.mouse_encoding(), code, col, row, release);
         self.write(&bytes);
     }
 
@@ -485,4 +476,73 @@ fn write_ppm(path: &Path, rgba: &[u8], width: u32, height: u32) -> std::io::Resu
         }
     }
     fs::write(path, out)
+}
+
+/// The bytes for one mouse report, in the encoding the program asked for. `col` and `row`
+/// are zero-based view cells; `code` is the button (plus 32 for motion).
+fn encode_mouse(encoding: MouseEncoding, code: u8, col: usize, row: usize, release: bool) -> Vec<u8> {
+    let (x, y) = (col + 1, row + 1);
+    match encoding {
+            MouseEncoding::Sgr => {
+                let end = if release { 'm' } else { 'M' };
+                format!("\x1b[<{code};{x};{y}{end}").into_bytes()
+            }
+            MouseEncoding::Urxvt => {
+                let button = (if release { 3 } else { code }) as usize + 32;
+                format!("\x1b[{button};{x};{y}M").into_bytes()
+            }
+            MouseEncoding::Utf8 => {
+                // Each value is offset by 32 and written as a UTF-8 character.
+                let button = (if release { 3 } else { code }) as u32 + 32;
+                let mut out = b"\x1b[M".to_vec();
+                for value in [button, 32 + x as u32, 32 + y as u32] {
+                    let mut buf = [0u8; 4];
+                    let ch = char::from_u32(value).unwrap_or('\u{fffd}');
+                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                }
+                out
+            }
+            MouseEncoding::Legacy => {
+                // Each value is offset by 32, and coordinates stop at 223.
+                let button = if release { 3 } else { code };
+                vec![
+                    0x1b,
+                    b'[',
+                    b'M',
+                    32 + button,
+                    (32 + x).min(255) as u8,
+                    (32 + y).min(255) as u8,
+                ]
+            }
+        }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sgr_press_and_release() {
+        assert_eq!(encode_mouse(MouseEncoding::Sgr, 0, 4, 2, false), b"\x1b[<0;5;3M");
+        assert_eq!(encode_mouse(MouseEncoding::Sgr, 0, 4, 2, true), b"\x1b[<0;5;3m");
+    }
+
+    #[test]
+    fn legacy_release_is_button_three() {
+        assert_eq!(encode_mouse(MouseEncoding::Legacy, 0, 0, 0, false), vec![0x1b, b'[', b'M', 32, 33, 33]);
+        assert_eq!(encode_mouse(MouseEncoding::Legacy, 0, 0, 0, true), vec![0x1b, b'[', b'M', 35, 33, 33]);
+    }
+
+    #[test]
+    fn urxvt_is_decimal() {
+        assert_eq!(encode_mouse(MouseEncoding::Urxvt, 2, 9, 1, false), b"\x1b[34;10;2M");
+    }
+
+    #[test]
+    fn utf8_coordinates_are_multibyte_past_95() {
+        // Column 200 (1-based 201) is offset to 233, which needs two UTF-8 bytes.
+        let bytes = encode_mouse(MouseEncoding::Utf8, 0, 200, 0, false);
+        assert_eq!(&bytes[..4], b"\x1b[M ");
+        assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), "\u{e9}!");
+    }
 }

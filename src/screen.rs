@@ -10,6 +10,19 @@ use std::collections::VecDeque;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
+/// How mouse reports are encoded for the program (set by DECSET 1005, 1006 and 1015).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseEncoding {
+    /// `ESC [ M` followed by three bytes, each offset by 32. Coordinates are limited to 223.
+    Legacy,
+    /// As legacy, but coordinates are UTF-8 encoded (mode 1005).
+    Utf8,
+    /// `ESC [ < b ; x ; y M` (press) or `m` (release) (mode 1006).
+    Sgr,
+    /// `ESC [ b ; x ; y M` with decimal numbers (mode 1015).
+    Urxvt,
+}
+
 /// A colour as the program asked for it; the renderer maps it to real pixels.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Color {
@@ -24,8 +37,8 @@ pub enum Color {
 pub struct Cell {
     /// The character shown. `'\0'` marks the second column of a wide character.
     pub ch: char,
-    /// A combining mark drawn over `ch`. Only the first one is kept.
-    pub mark: Option<char>,
+    /// Combining marks drawn over `ch`. Up to two are kept.
+    pub marks: [Option<char>; 2],
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
@@ -40,7 +53,7 @@ impl Default for Cell {
     fn default() -> Self {
         Cell {
             ch: ' ',
-            mark: None,
+            marks: [None; 2],
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
@@ -94,8 +107,8 @@ pub struct Screen {
     scroll_bottom: usize,
     /// Mouse tracking mode requested by the program: 0 (off), 1000, 1002 or 1003.
     mouse_tracking: u16,
-    /// Whether mouse reports use the SGR (1006) encoding.
-    mouse_sgr: bool,
+    /// How mouse reports are encoded.
+    mouse_encoding: MouseEncoding,
 }
 
 impl Screen {
@@ -120,7 +133,7 @@ impl Screen {
             scroll_top: 0,
             scroll_bottom: rows - 1,
             mouse_tracking: 0,
-            mouse_sgr: false,
+            mouse_encoding: MouseEncoding::Legacy,
         }
     }
 
@@ -157,9 +170,9 @@ impl Screen {
         self.mouse_tracking
     }
 
-    /// Whether mouse reports should use the SGR encoding.
-    pub fn mouse_sgr(&self) -> bool {
-        self.mouse_sgr
+    /// How mouse reports should be encoded.
+    pub fn mouse_encoding(&self) -> MouseEncoding {
+        self.mouse_encoding
     }
 
     /// Scroll the view up (positive) or down (negative) through the history.
@@ -236,8 +249,8 @@ impl Screen {
                 let c = self.cell_at(row, col);
                 if c.ch != '\0' {
                     line.push(c.ch);
-                    if let Some(mark) = c.mark {
-                        line.push(mark);
+                    for mark in c.marks.iter().flatten() {
+                        line.push(*mark);
                     }
                 }
             }
@@ -427,8 +440,8 @@ impl Screen {
         if self.cells[idx].ch == '\0' && col > 0 {
             idx -= 1;
         }
-        if self.cells[idx].mark.is_none() {
-            self.cells[idx].mark = Some(ch);
+        if let Some(slot) = self.cells[idx].marks.iter_mut().find(|m| m.is_none()) {
+            *slot = Some(ch);
         }
     }
 
@@ -659,7 +672,18 @@ impl Perform for Screen {
                                 self.mouse_tracking = 0;
                             }
                         }
-                        1006 => self.mouse_sgr = set,
+                        1005 | 1006 | 1015 => {
+                            let wanted = match mode {
+                                1005 => MouseEncoding::Utf8,
+                                1006 => MouseEncoding::Sgr,
+                                _ => MouseEncoding::Urxvt,
+                            };
+                            if set {
+                                self.mouse_encoding = wanted;
+                            } else if self.mouse_encoding == wanted {
+                                self.mouse_encoding = MouseEncoding::Legacy;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -844,7 +868,7 @@ mod tests {
     fn combining_marks_attach_to_the_previous_character() {
         let mut s = Screen::new(3, 1);
         feed(&mut s, "e\u{301}x".as_bytes());
-        assert_eq!(s.visible_cell(0, 0).mark, Some('\u{301}'));
+        assert_eq!(s.visible_cell(0, 0).marks, [Some('\u{301}'), None]);
         assert_eq!(s.visible_cell(1, 0).ch, 'x');
         assert_eq!(s.text_between((0, 0), (0, 2)), "e\u{301}x");
     }
@@ -886,9 +910,11 @@ mod tests {
         let mut s = Screen::new(3, 1);
         feed(&mut s, b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(s.mouse_tracking(), 1002);
-        assert!(s.mouse_sgr());
+        assert_eq!(s.mouse_encoding(), MouseEncoding::Sgr);
         feed(&mut s, b"\x1b[?1002l");
         assert_eq!(s.mouse_tracking(), 0);
-        assert!(s.mouse_sgr());
+        assert_eq!(s.mouse_encoding(), MouseEncoding::Sgr);
+        feed(&mut s, b"\x1b[?1006l");
+        assert_eq!(s.mouse_encoding(), MouseEncoding::Legacy);
     }
 }
