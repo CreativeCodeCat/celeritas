@@ -11,6 +11,7 @@ crossfont = "0.9"
 glow = "0.18"
 glutin = "0.32"
 glutin-winit = "0.5"
+libc = "0.2"        # set the process name (prctl)
 mlua = { version = "0.12.3", features = ["lua54", "vendored"] }
 portable-pty = "0.8" # spawns the shell inside a pseudo-terminal
 raw-window-handle = "0.6"

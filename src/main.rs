@@ -22,7 +22,17 @@ use app::App;
 use config::Config;
 use pty::Pty;
 
+/// Name the process "Celeritas" (Linux shows this name in `ps`, and fastfetch reads it for
+/// the terminal line). The name is cut to 15 bytes by the kernel.
+fn set_process_name() {
+    // SAFETY: PR_SET_NAME only reads the NUL-terminated string it is given.
+    unsafe {
+        libc::prctl(libc::PR_SET_NAME, b"Celeritas\0".as_ptr() as libc::c_ulong, 0, 0, 0);
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    set_process_name();
     let mut config = Config::load();
     if let Err(e) = config.apply_args(std::env::args().skip(1)) {
         eprintln!("celeritas: {e}");

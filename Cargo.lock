@@ -213,6 +213,7 @@ dependencies = [
  "glow",
  "glutin",
  "glutin-winit",
+ "libc",
  "mlua",
  "portable-pty",
  "raw-window-handle",
