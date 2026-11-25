@@ -1,4 +1,4 @@
-# celeritas
+# Celeritas
 
 A minimal terminal emulator written in Rust. It opens its own window and runs your shell in it, so it doesn't need another terminal to run in.
 
@@ -45,7 +45,7 @@ Close the window to quit.
 
 ## Configuration
 
-Settings are read from `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME/celeritas/celeritas.lua`). If the file doesn't exist, celeritas creates it with the defaults. It is Lua, and returns a table of settings grouped into sections:
+Settings are read from `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME/celeritas/celeritas.lua`). If the file doesn't exist, Celeritas creates it with the defaults. It is Lua, and returns a table of settings grouped into sections:
 
 ```lua
 return {
@@ -56,7 +56,7 @@ return {
 }
 ```
 
-Anything you leave out uses the built-in default. A broken file prints an error and falls back to the defaults. Changes are picked up within a second while celeritas runs.
+Anything you leave out uses the built-in default. A broken file prints an error and falls back to the defaults. Changes are picked up within a second while Celeritas runs.
 
 The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua). The man page lists every setting.
 
@@ -70,10 +70,6 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua). The 
 6. **Clipboard** (`copypasta`, `src/clipboard.rs`): the X11 clipboard, which XWayland shares with Wayland applications.
 7. **Configuration** (`mlua`, `src/config.rs`): reads the Lua file at startup and again when it changes.
 
-## Limitations
-
-- Other terminal modes are accepted and ignored.
-
 ## License
 
-celeritas is free software, released under the [GNU General Public License v3.0 or later](LICENSE). It comes with no warranty.
+Celeritas is free software, released under the [GNU General Public License v3.0 or later](LICENSE). It comes with no warranty.
