@@ -10,6 +10,7 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 - Mouse selection, copied with Ctrl+Shift+C; double-click selects a word, triple-click a line, Alt+drag selects a rectangle
 - Scroll regions (`CSI r`), insert and delete line, and reverse index
 - Mouse reporting for programs (vim, less): the 1000, 1002 and 1003 modes, with legacy, UTF-8 (1005), SGR (1006) or URXVT (1015) encoding. Hold Shift to select text instead
+- Terminal modes for programs: focus reporting (1004), bracketed paste (2004), application cursor keys (1) and cursor visibility (25)
 - Combining marks (accents, up to two per character) drawn over their base character
 - Wide characters (CJK and most emoji) take two columns
 - Answers the terminal queries shells send at startup (for example, fish's device-attributes probe)
@@ -89,7 +90,7 @@ This is a learning-sized emulator, not a full-featured terminal:
 
 - Italic text is slanted in software when no italic face is installed. Install an italic version of your font and set `font.italic` to use it
 - These options are not supported yet and are ignored: `cursor.vi_mode_style`, `window.dynamic_padding`, `window.decorations_theme_variant` and `general.live_config_reload`
-- Other terminal modes are accepted and ignored. Mouse tracking (1000, 1002, 1003) and encodings (1005, 1006, 1015), focus reporting (1004), bracketed paste (2004), application cursor keys (1) and cursor visibility (25) are supported
+- Other terminal modes are accepted and ignored
 
 ## License
 
