@@ -7,9 +7,13 @@
 
 use std::error::Error;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use mlua::{Lua, Table};
+
+/// The config written on first launch. It is the same as `Config::default()`.
+const DEFAULT_CONFIG: &str = include_str!("../dist/celeritas.lua");
 
 /// An 8-bit RGB colour.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -84,13 +88,16 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load the user's config. A missing file means defaults; a broken file prints
-    /// an error and also uses defaults, so the terminal always starts.
+    /// Load the user's config. If there is none, write the default one first; a broken
+    /// file prints an error and uses defaults, so the terminal always starts.
     pub fn load() -> Config {
         let Some(path) = config_path() else {
             return Config::default();
         };
         if !path.exists() {
+            if let Err(e) = write_default(&path) {
+                eprintln!("celeritas: could not create {}: {e}", path.display());
+            }
             return Config::default();
         }
         match load_file(&path) {
@@ -110,6 +117,15 @@ fn config_path() -> Option<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("celeritas").join("celeritas.lua"))
+}
+
+/// Write the default config, without overwriting anything already there.
+fn write_default(path: &PathBuf) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(DEFAULT_CONFIG.as_bytes())
 }
 
 fn load_file(path: &PathBuf) -> Result<Config, Box<dyn Error>> {
@@ -208,6 +224,11 @@ fn parse_hex(s: &str) -> Result<Rgb, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_file_matches_builtin_defaults() {
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap(), Config::default());
+    }
 
     #[test]
     fn empty_table_gives_defaults() {
