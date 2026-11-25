@@ -58,7 +58,8 @@ Supported settings:
 - `env`: extra environment variables for the shell
 - `scrolling.history`: lines of scrollback kept (default 10000; 0 turns it off)
 - `shell`: the shell to run (default `$SHELL`)
-- `window`: `title`, `decorations`, and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
+- `window`: `title`, `decorations`, `opacity` (0.0 to 1.0; only the default background becomes see-through), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
+- `cursor.style`: `"Block"`, `"Underline"` or `"Beam"`
 - `font.size`
 - `colors`: `primary.background` / `foreground`, the `normal` and `bright` ANSI colours, and `draw_bold_text_with_bright_colors`
 - `general.working_directory`
@@ -73,7 +74,7 @@ This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
 - Only the 1000, 1002 and 1003 mouse modes are supported
 - Italic text without a configured italic face is slanted in software, not drawn with a true italic. Set `font.italic` for a real one
-- Unsupported Alacritty options (key bindings, cursor style, opacity) are ignored
+- Key bindings are fixed. Only the Alacritty options listed above are read; others are ignored
 
 ## License
 

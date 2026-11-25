@@ -31,6 +31,18 @@ pub struct FontFaces {
     pub bold_italic: Option<FontFace>,
 }
 
+/// The shape of the cursor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CursorStyle {
+    /// A filled cell.
+    #[default]
+    Block,
+    /// A bar along the bottom of the cell.
+    Underline,
+    /// A bar along the left of the cell.
+    Beam,
+}
+
 /// An 8-bit RGB colour.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -64,6 +76,10 @@ pub struct Config {
     pub env: Vec<(String, String)>,
     /// Lines of scrollback kept above the screen. 0 turns scrollback off.
     pub scrollback: usize,
+    /// Window opacity, from 0 (transparent) to 1 (opaque). Only the default background
+    /// becomes see-through.
+    pub opacity: f32,
+    pub cursor_style: CursorStyle,
 }
 
 impl Default for Config {
@@ -104,6 +120,8 @@ impl Default for Config {
             working_directory: None,
             env: Vec::new(),
             scrollback: crate::screen::DEFAULT_HISTORY,
+            opacity: 1.0,
+            cursor_style: CursorStyle::Block,
         }
     }
 }
@@ -173,6 +191,9 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
         if let Some(decorations) = window.get::<Option<bool>>("decorations")? {
             config.decorations = decorations;
         }
+        if let Some(opacity) = window.get::<Option<f32>>("opacity")? {
+            config.opacity = opacity.clamp(0.0, 1.0);
+        }
         if let Some(dims) = window.get::<Option<Table>>("dimensions")? {
             if let Some(columns) = dims.get::<Option<usize>>("columns")? {
                 config.columns = columns.max(1);
@@ -202,6 +223,17 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     if let Some(scrolling) = root.get::<Option<Table>>("scrolling")? {
         if let Some(history) = scrolling.get::<Option<usize>>("history")? {
             config.scrollback = history;
+        }
+    }
+
+    if let Some(cursor) = root.get::<Option<Table>>("cursor")? {
+        if let Some(style) = cursor.get::<Option<String>>("style")? {
+            config.cursor_style = match style.to_ascii_lowercase().as_str() {
+                "block" => CursorStyle::Block,
+                "underline" => CursorStyle::Underline,
+                "beam" => CursorStyle::Beam,
+                other => return Err(format!("unknown cursor style {other:?}").into()),
+            };
         }
     }
 
@@ -329,6 +361,14 @@ mod tests {
         let bold = config.faces.bold.unwrap();
         assert_eq!(bold.style.as_deref(), Some("Bold"));
         assert!(config.faces.italic.is_none());
+    }
+
+    #[test]
+    fn reads_cursor_style_and_opacity() {
+        let config = parse(r#"return { window = { opacity = 0.5 }, cursor = { style = "beam" } }"#).unwrap();
+        assert_eq!(config.opacity, 0.5);
+        assert_eq!(config.cursor_style, CursorStyle::Beam);
+        assert!(parse(r#"return { cursor = { style = "wiggly" } }"#).is_err());
     }
 
     #[test]

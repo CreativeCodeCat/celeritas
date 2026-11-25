@@ -18,6 +18,13 @@ return {
       columns = 80,
       lines = 24,
     },
+    -- Window opacity, from 0.0 (transparent) to 1.0 (opaque).
+    opacity = 1.0,
+  },
+
+  cursor = {
+    -- "Block", "Underline" or "Beam".
+    style = "Block",
   },
 
   font = {

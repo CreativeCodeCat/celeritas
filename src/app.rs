@@ -118,10 +118,12 @@ impl App {
         let attributes = WindowAttributes::default()
             .with_title(self.config.title.clone())
             .with_inner_size(size)
-            .with_decorations(self.config.decorations);
+            .with_decorations(self.config.decorations)
+            .with_transparent(self.config.opacity < 1.0);
+        let template = ConfigTemplateBuilder::new().with_transparency(self.config.opacity < 1.0);
         let (window, gl_config) = DisplayBuilder::new()
             .with_window_attributes(Some(attributes))
-            .build(event_loop, ConfigTemplateBuilder::new(), |mut configs| {
+            .build(event_loop, template, |mut configs| {
                 configs.next().expect("no OpenGL configuration available")
             })?;
         let window = window.ok_or("the window could not be created")?;
@@ -140,7 +142,8 @@ impl App {
         // SAFETY: the context is current on this thread, and the loader only reads symbols.
         let gl = unsafe { glow::Context::from_loader_function_cstr(|name: &CStr| display.get_proc_address(name)) };
         let inner = window.inner_size();
-        let renderer = Renderer::new(gl, fonts, (inner.width, inner.height))?;
+        let mut renderer = Renderer::new(gl, fonts, (inner.width, inner.height))?;
+        renderer.opacity = self.config.opacity;
 
         Ok(Graphics { window, surface, context, renderer })
     }
@@ -179,6 +182,7 @@ impl App {
             selection: self.selection.and_then(|s| s.range()),
             selection_block: self.selection.is_some_and(|s| s.block),
             cursor: self.screen.at_bottom().then(|| self.screen.cursor()),
+            cursor_style: self.config.cursor_style,
         };
         gfx.renderer.draw(&self.screen, &self.config.colors, &overlay);
 

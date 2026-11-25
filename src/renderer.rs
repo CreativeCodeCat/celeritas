@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use glow::HasContext;
 
-use crate::config::{Colors, Rgb};
+use crate::config::{Colors, CursorStyle, Rgb};
 use crate::font::{FaceStyle, FontSet};
 use crate::screen::{Cell, Color, Screen};
 
@@ -67,6 +67,7 @@ pub struct Overlay {
     pub selection_block: bool,
     /// Cursor position on the view, if it should be drawn.
     pub cursor: Option<(usize, usize)>,
+    pub cursor_style: CursorStyle,
 }
 
 /// A glyph in the atlas. Zero-sized glyphs (such as spaces) have no texture area.
@@ -91,6 +92,8 @@ pub struct Renderer {
     row_height: i32,
     glyphs: HashMap<(char, FaceStyle), Option<Glyph>>,
     pub fonts: FontSet,
+    /// Window opacity: the default background is drawn at this alpha.
+    pub opacity: f32,
     vertices: Vec<f32>,
     size: (u32, u32),
 }
@@ -130,7 +133,8 @@ impl Renderer {
             );
 
             gl.enable(glow::BLEND);
-            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            // Premultiplied alpha output, so a transparent window composites correctly.
+            gl.blend_func_separate(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
             gl.viewport(0, 0, size.0 as i32, size.1 as i32);
 
             Ok(Renderer {
@@ -145,6 +149,7 @@ impl Renderer {
                 row_height: 0,
                 glyphs: HashMap::new(),
                 fonts,
+                opacity: 1.0,
                 vertices: Vec::new(),
                 size,
             })
@@ -174,7 +179,8 @@ impl Renderer {
         let background = rgba(colors.background, 1.0);
         unsafe {
             let gl = &self.gl;
-            gl.clear_color(background[0], background[1], background[2], 1.0);
+            let a = self.opacity;
+            gl.clear_color(background[0] * a, background[1] * a, background[2] * a, a);
             gl.clear(glow::COLOR_BUFFER_BIT);
             gl.use_program(Some(self.program));
             gl.bind_vertex_array(Some(self.vao));
@@ -269,7 +275,12 @@ impl Renderer {
                     push_quad(&mut self.vertices, px, py + ch / 2.0, cw, 1.0, [0.0; 4], rgba(fg, 1.0), MODE_SOLID);
                 }
                 if overlay.cursor == Some((x, y)) {
-                    push_quad(&mut self.vertices, px, py, cw, ch, [0.0; 4], CURSOR_COLOR, MODE_SOLID);
+                    let (x0, y0, w, h) = match overlay.cursor_style {
+                        CursorStyle::Block => (px, py, cw, ch),
+                        CursorStyle::Underline => (px, py + ch - 2.0, cw, 2.0),
+                        CursorStyle::Beam => (px, py, 2.0, ch),
+                    };
+                    push_quad(&mut self.vertices, x0, y0, w, h, [0.0; 4], CURSOR_COLOR, MODE_SOLID);
                 }
             }
         }

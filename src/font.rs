@@ -75,10 +75,22 @@ impl FontSet {
         let (italic, italic_real) = load_variant(&mut rasterizer, &faces.italic, "Italic");
         let (bold_italic, bold_italic_real) = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic");
 
+        // FreeType only has the size once a glyph has been rasterised, and the metrics
+        // are not valid before that. So measure a glyph first and take the cell width
+        // from its advance, which is in pixels.
+        let probe = GlyphKey { character: 'M', font_key: normal, size };
+        let advance = match rasterizer.get_glyph(probe) {
+            Ok(glyph) | Err(FontError::MissingGlyph(glyph)) => glyph.advance.0,
+            Err(_) => 0,
+        };
         let metrics = rasterizer.metrics(normal, size)?;
+        let cell_width = if advance > 0 {
+            advance as f32
+        } else {
+            metrics.average_advance.max(1.0) as f32
+        };
         // Some rasterizer setups report no line height or descent. Fall back to values
         // typical of monospace fonts at this size.
-        let cell_width = metrics.average_advance.max(1.0) as f32;
         let cell_height = if metrics.line_height > 0.0 {
             metrics.line_height.round() as f32
         } else {
