@@ -13,8 +13,10 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 - Terminal modes for programs: focus reporting (1004), bracketed paste (2004), application cursor keys (1) and cursor visibility (25)
 - Combining marks (accents, up to two per character) drawn over their base character
 - Wide characters (CJK and most emoji) take two columns
+- Italic text uses the font's italic face, or else the first installed monospace font that has one. Set `font.italic` to choose a specific face. Without any italic face, italic text uses the regular face and bold italic uses the bold face
 - Answers the terminal queries shells send at startup (for example, fish's device-attributes probe)
 - Paste with Ctrl-V; Ctrl-C is sent to the shell as an interrupt
+- Vi mode (Ctrl+Shift+Space): `h` `j` `k` `l`, the arrow keys, `0`, `$`, `g`, `G` and PageUp/PageDown move a cursor over the scrollback. `v` starts a selection, `y` copies it, and Escape or `i` leaves vi mode. Keys don't reach the shell while it's on
 - Configured with a Lua file: window size and title, font size, colours, shell, working directory and environment variables
 
 ## How it works
@@ -67,7 +69,7 @@ Supported settings:
 - `scrolling.history`: lines of scrollback kept (default 10000; 0 turns it off)
 - `scrolling.multiplier`: lines scrolled per mouse-wheel notch (default 3)
 - `shell`: the shell to run (default `$SHELL`)
-- `window`: `title`, `decorations`, `decorations_theme_variant` (`"Dark"` or `"Light"`), `opacity` (0.0 to 1.0; only the default background becomes see-through), `class` (`instance` and `general`, the names window-manager rules match), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
+- `window`: `title`, `decorations`, `decorations_theme_variant` (`"Dark"` or `"Light"`), `padding` (`x` and `y`, in logical pixels, blank space around the grid), `dynamic_padding` (share spare window space evenly around the grid), `opacity` (0.0 to 1.0; only the default background becomes see-through), `class` (`instance` and `general`, the names window-manager rules match), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
 - `mouse.hide_when_typing`: hide the mouse pointer while typing, and show it again when the mouse moves
 - `mouse.bindings`: the middle button, as `{ mouse = "Middle", action = ... }` with action `PasteSelection` (the default), `Paste` or `None`. Selecting text by dragging sets the primary selection
 - `selection.save_to_clipboard`: copy a selection to the clipboard as soon as it is dragged out
@@ -75,7 +77,8 @@ Supported settings:
 - `cursor.thickness`: the underline and beam thickness as a fraction of the cell (default 0.15)
 - `cursor.unfocused_hollow`: draw a block cursor as an outline while the window is unfocused (default true)
 - `cursor.style`: `"Block"`, `"Underline"` or `"Beam"`
-- `keyboard.bindings`: a list of `{ key, mods, action }` or `{ key, mods, chars }` entries. Actions are Copy, Paste, ScrollPageUp, ScrollPageDown, ScrollLineUp, ScrollLineDown, ScrollToTop, ScrollToBottom and None (swallow the key). `chars` sends the given text. Later entries take precedence over the built-in keys
+- `cursor.vi_mode_style`: the cursor shape in vi mode, `"Block"`, `"Underline"`, `"Beam"`, or `"None"` to keep the normal shape
+- `keyboard.bindings`: a list of `{ key, mods, action }` or `{ key, mods, chars }` entries. Actions are Copy, Paste, ScrollPageUp, ScrollPageDown, ScrollLineUp, ScrollLineDown, ScrollToTop, ScrollToBottom, ToggleViMode and None (swallow the key). `chars` sends the given text. Later entries take precedence over the built-in keys
 - `font.size`
 - `colors`: `primary.background` / `foreground`, the `normal` and `bright` ANSI colours, and `draw_bold_text_with_bright_colors`
 - `general.working_directory`
@@ -89,9 +92,6 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 
 This is a learning-sized emulator, not a full-featured terminal:
 
-- Italic text uses a real italic face from the system: the normal font's own, or else the first monospace font that has one. Only if the system has no italic monospace face is italic text slanted in software. Set `font.italic` to choose a specific face
-- `window.dynamic_padding` is not supported yet, because celeritas has no window padding. It is ignored
-- `cursor.vi_mode_style` has no effect, because celeritas has no vi mode
 - Other terminal modes are accepted and ignored
 
 ## License

@@ -67,6 +67,8 @@ pub enum BindingAction {
     ScrollLineDown,
     ScrollToTop,
     ScrollToBottom,
+    /// Turn vi mode on or off: keys move a cursor over the scrollback instead of going to the shell.
+    ToggleViMode,
     /// Swallow the key press so the shell never sees it.
     Nothing,
     /// Send these bytes to the shell.
@@ -140,10 +142,17 @@ pub struct Config {
     pub semantic_escape_chars: String,
     /// What the middle mouse button does (`mouse.bindings`).
     pub middle_click: MiddleClick,
+    /// The cursor shape in vi mode (`cursor.vi_mode_style`); `None` keeps the normal shape.
+    pub vi_mode_cursor: Option<CursorStyle>,
     /// Re-read the configuration file when it changes (`general.live_config_reload`).
     pub live_config_reload: bool,
     /// Light or dark window decorations; `None` follows the system (`window.decorations_theme_variant`).
     pub decorations_theme: Option<winit::window::Theme>,
+    /// Blank space between the window edge and the grid, horizontally and vertically, in
+    /// logical pixels (`window.padding`).
+    pub padding: (f32, f32),
+    /// Share spare window space evenly around the grid (`window.dynamic_padding`).
+    pub dynamic_padding: bool,
 }
 
 impl Default for Config {
@@ -196,8 +205,11 @@ impl Default for Config {
             cursor_unfocused_hollow: true,
             semantic_escape_chars: ",│`|:\"' ()[]{}<>\t".to_string(),
             middle_click: MiddleClick::PasteSelection,
+            vi_mode_cursor: None,
             live_config_reload: true,
             decorations_theme: None,
+            padding: (0.0, 0.0),
+            dynamic_padding: false,
         }
     }
 }
@@ -305,6 +317,14 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     }
 
     if let Some(window) = root.get::<Option<Table>>("window")? {
+        if let Some(padding) = window.get::<Option<Table>>("padding")? {
+            let x = padding.get::<Option<f32>>("x")?.unwrap_or(0.0).max(0.0);
+            let y = padding.get::<Option<f32>>("y")?.unwrap_or(0.0).max(0.0);
+            config.padding = (x, y);
+        }
+        if let Some(dynamic) = window.get::<Option<bool>>("dynamic_padding")? {
+            config.dynamic_padding = dynamic;
+        }
         if let Some(title) = window.get::<Option<String>>("title")? {
             config.title = title;
         }
@@ -416,6 +436,15 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
         if let Some(thickness) = cursor.get::<Option<f32>>("thickness")? {
             config.cursor_thickness = thickness.clamp(0.0, 1.0);
         }
+        if let Some(style) = cursor.get::<Option<String>>("vi_mode_style")? {
+            config.vi_mode_cursor = match style.to_ascii_lowercase().as_str() {
+                "none" => None,
+                "block" => Some(CursorStyle::Block),
+                "underline" => Some(CursorStyle::Underline),
+                "beam" => Some(CursorStyle::Beam),
+                other => return Err(format!("unknown vi mode cursor style {other:?}").into()),
+            };
+        }
         if let Some(hollow) = cursor.get::<Option<bool>>("unfocused_hollow")? {
             config.cursor_unfocused_hollow = hollow;
         }
@@ -478,6 +507,7 @@ fn parse_action(name: &str) -> Result<BindingAction, Box<dyn Error>> {
         "scrolllinedown" => BindingAction::ScrollLineDown,
         "scrolltotop" => BindingAction::ScrollToTop,
         "scrolltobottom" => BindingAction::ScrollToBottom,
+        "togglevimode" => BindingAction::ToggleViMode,
         "none" => BindingAction::Nothing,
         other => return Err(format!("unknown action {other:?}").into()),
     })
@@ -653,6 +683,15 @@ mod tests {
         assert_eq!(c.decorations_theme, Some(winit::window::Theme::Dark));
         assert!(!c.live_config_reload);
         assert!(parse("return { window = { decorations_theme_variant = 'Blue' } }").is_err());
+    }
+
+    #[test]
+    fn reads_vi_mode_settings() {
+        let c = parse("return { cursor = { vi_mode_style = 'Beam' }, keyboard = { bindings = { { key = 'Space', mods = 'Control|Shift', action = 'ToggleViMode' } } } }").unwrap();
+        assert_eq!(c.vi_mode_cursor, Some(CursorStyle::Beam));
+        assert_eq!(c.bindings[0].action, BindingAction::ToggleViMode);
+        let c = parse("return { cursor = { vi_mode_style = 'None' } }").unwrap();
+        assert_eq!(c.vi_mode_cursor, None);
     }
 
     #[test]

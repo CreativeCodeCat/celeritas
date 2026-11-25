@@ -56,6 +56,64 @@ enum Pumped {
     Exited,
 }
 
+/// What a key does in vi mode.
+#[derive(Debug, PartialEq)]
+enum ViAction {
+    /// Move the vi cursor to a logical (row, column).
+    Move((usize, usize)),
+    Exit,
+    ToggleSelection,
+    Yank,
+    Ignore,
+}
+
+/// The vi action for a key, given the vi cursor and the grid size.
+fn vi_action(key: &Key, cursor: (usize, usize), total_rows: usize, cols: usize, rows: usize) -> ViAction {
+    let (row, col) = cursor;
+    let last_row = total_rows - 1;
+    let last_col = cols - 1;
+    let page = rows.saturating_sub(1).max(1);
+    let to = |target| ViAction::Move(target);
+    match key {
+        Key::Named(NamedKey::Escape) => ViAction::Exit,
+        Key::Named(NamedKey::ArrowLeft) => to((row, col.saturating_sub(1))),
+        Key::Named(NamedKey::ArrowRight) => to((row, (col + 1).min(last_col))),
+        Key::Named(NamedKey::ArrowUp) => to((row.saturating_sub(1), col)),
+        Key::Named(NamedKey::ArrowDown) => to(((row + 1).min(last_row), col)),
+        Key::Named(NamedKey::Home) => to((row, 0)),
+        Key::Named(NamedKey::End) => to((row, last_col)),
+        Key::Named(NamedKey::PageUp) => to((row.saturating_sub(page), col)),
+        Key::Named(NamedKey::PageDown) => to(((row + page).min(last_row), col)),
+        Key::Character(c) => match c.as_str() {
+            "h" => to((row, col.saturating_sub(1))),
+            "l" => to((row, (col + 1).min(last_col))),
+            "k" => to((row.saturating_sub(1), col)),
+            "j" => to(((row + 1).min(last_row), col)),
+            "0" => to((row, 0)),
+            "$" => to((row, last_col)),
+            "g" => to((0, 0)),
+            "G" => to((last_row, 0)),
+            "v" => ViAction::ToggleSelection,
+            "y" => ViAction::Yank,
+            "i" => ViAction::Exit,
+            _ => ViAction::Ignore,
+        },
+        _ => ViAction::Ignore,
+    }
+}
+
+/// The first logical row the view should show so that `row` is on screen, given the current
+/// first row and the number of rows on screen.
+fn view_top_for(row: usize, first: usize, rows: usize) -> usize {
+    if row < first {
+        row
+    } else if row >= first + rows {
+        row + 1 - rows
+    } else {
+        first
+    }
+}
+
 /// A mouse selection in logical screen coordinates: (row, column) pairs.
 #[derive(Clone, Copy, PartialEq)]
 struct Selection {
@@ -109,6 +167,11 @@ pub struct App {
     redraw_deferred: bool,
     /// Whether the window has keyboard focus.
     focused: bool,
+    /// Vi mode: a cursor that moves over the scrollback, as a logical (row, column).
+    vi_mode: bool,
+    vi_cursor: (usize, usize),
+    /// Whether vi mode is extending a selection from the vi cursor.
+    vi_selecting: bool,
     /// Command-line options, re-applied on top of the configuration file when it is reloaded.
     cli_args: Vec<String>,
     /// The configuration file, and its modification time when it was last read.
@@ -150,6 +213,9 @@ impl App {
             last_frame: None,
             redraw_deferred: false,
             focused: true,
+            vi_mode: false,
+            vi_cursor: (0, 0),
+            vi_selecting: false,
             pty_busy: false,
         }
     }
@@ -157,9 +223,10 @@ impl App {
     fn create_graphics(&self, event_loop: &ActiveEventLoop) -> Result<Graphics, Box<dyn Error>> {
         let scale = event_loop.primary_monitor().map_or(1.0, |m| m.scale_factor());
         let fonts = FontSet::load(&self.config.faces, self.config.font_size * scale as f32)?;
+        let pad = (self.config.padding.0 * scale as f32, self.config.padding.1 * scale as f32);
         let size = PhysicalSize::new(
-            (self.config.columns as f32 * fonts.cell_width).ceil() as u32,
-            (self.config.lines as f32 * fonts.cell_height).ceil() as u32,
+            (self.config.columns as f32 * fonts.cell_width + 2.0 * pad.0).ceil() as u32,
+            (self.config.lines as f32 * fonts.cell_height + 2.0 * pad.1).ceil() as u32,
         );
 
         let mut attributes = WindowAttributes::default()
@@ -202,6 +269,8 @@ impl App {
         let inner = window.inner_size();
         let mut renderer = Renderer::new(gl, fonts, (inner.width, inner.height))?;
         renderer.opacity = self.config.opacity;
+        renderer.set_padding(pad, self.config.dynamic_padding);
+        renderer.layout(self.config.columns, self.config.lines);
 
         Ok(Graphics { window, surface, context, renderer })
     }
@@ -282,8 +351,95 @@ impl App {
                 gfx.window.set_theme(new.decorations_theme);
             }
             gfx.renderer.opacity = new.opacity;
+            if new.padding != self.config.padding || new.dynamic_padding != self.config.dynamic_padding {
+                let scale = gfx.window.scale_factor() as f32;
+                let pad = (new.padding.0 * scale, new.padding.1 * scale);
+                gfx.renderer.set_padding(pad, new.dynamic_padding);
+                gfx.renderer.layout(self.screen.cols, self.screen.rows);
+            }
         }
         self.config = new;
+        self.request_redraw();
+    }
+
+    /// Turn vi mode on or off. Turning it on starts the vi cursor at the shell's cursor.
+    fn toggle_vi_mode(&mut self) {
+        if self.vi_mode {
+            self.exit_vi_mode();
+            return;
+        }
+        let (x, y) = self.screen.cursor();
+        let row = self.screen.total_rows() - self.screen.rows + y;
+        self.vi_mode = true;
+        self.vi_move((row, x));
+    }
+
+    fn exit_vi_mode(&mut self) {
+        self.vi_mode = false;
+        if self.vi_selecting {
+            self.selection = None;
+            self.vi_selecting = false;
+        }
+        self.request_redraw();
+    }
+
+    /// A key pressed in vi mode: motions move the cursor, `v` and `y` select and copy, and
+    /// Escape or `i` leave vi mode. Nothing is sent to the shell.
+    fn vi_key(&mut self, key: &Key) {
+        let action = vi_action(key, self.vi_cursor, self.screen.total_rows(), self.screen.cols, self.screen.rows);
+        match action {
+            ViAction::Move(target) => self.vi_move(target),
+            ViAction::Exit => self.exit_vi_mode(),
+            ViAction::ToggleSelection => self.toggle_vi_selection(),
+            ViAction::Yank => self.yank_vi_selection(),
+            ViAction::Ignore => {}
+        }
+    }
+
+    /// Move the vi cursor, extending the selection if one is being made, and scroll the view
+    /// so the cursor stays on screen.
+    fn vi_move(&mut self, target: (usize, usize)) {
+        self.vi_cursor = target;
+        if self.vi_selecting {
+            if let Some(selection) = self.selection.as_mut() {
+                selection.head = target;
+            }
+        }
+        let first = self.screen.first_visible_row();
+        let wanted = view_top_for(target.0, first, self.screen.rows);
+        if wanted != first {
+            // Positive lines scroll up, towards the history.
+            self.screen.scroll_view(first as isize - wanted as isize);
+        }
+        self.request_redraw();
+    }
+
+    /// Where the vi cursor is on the view, if it is on screen.
+    fn vi_view_cursor(&self) -> Option<(usize, usize)> {
+        let first = self.screen.first_visible_row();
+        let (row, col) = self.vi_cursor;
+        (row >= first && row < first + self.screen.rows).then(|| (col, row - first))
+    }
+
+    /// `v`: start a selection at the vi cursor, or clear the one being made.
+    fn toggle_vi_selection(&mut self) {
+        if self.vi_selecting {
+            self.selection = None;
+            self.vi_selecting = false;
+        } else {
+            self.selection = Some(Selection { anchor: self.vi_cursor, head: self.vi_cursor, block: false });
+            self.vi_selecting = true;
+        }
+        self.request_redraw();
+    }
+
+    /// `y`: copy the selection made in vi mode and stop selecting.
+    fn yank_vi_selection(&mut self) {
+        if self.vi_selecting {
+            self.copy_selection();
+            self.selection = None;
+            self.vi_selecting = false;
+        }
         self.request_redraw();
     }
 
@@ -301,6 +457,12 @@ impl App {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        let (cursor, cursor_style) = if self.vi_mode {
+            (self.vi_view_cursor(), self.config.vi_mode_cursor.unwrap_or(self.config.cursor_style))
+        } else {
+            let shown = (self.screen.at_bottom() && self.screen.cursor_visible()).then(|| self.screen.cursor());
+            (shown, self.config.cursor_style)
+        };
         // Frame cap: too soon after the last frame, so draw later (see `about_to_wait`).
         if self.last_frame.is_some_and(|last| last.elapsed() < FRAME_INTERVAL) {
             self.redraw_deferred = true;
@@ -312,8 +474,8 @@ impl App {
         let overlay = Overlay {
             selection: self.selection.and_then(|s| s.range()),
             selection_block: self.selection.is_some_and(|s| s.block),
-            cursor: (self.screen.at_bottom() && self.screen.cursor_visible()).then(|| self.screen.cursor()),
-            cursor_style: self.config.cursor_style,
+            cursor,
+            cursor_style,
             cursor_thickness: self.config.cursor_thickness,
             focused: self.focused,
             unfocused_hollow: self.config.cursor_unfocused_hollow,
@@ -350,12 +512,15 @@ impl App {
         gfx.surface.resize(&gfx.context, w, h);
         gfx.renderer.resize(width, height);
 
-        let cols = (width as f32 / gfx.renderer.fonts.cell_width).floor().max(1.0) as usize;
-        let rows = (height as f32 / gfx.renderer.fonts.cell_height).floor().max(1.0) as usize;
+        let (pad_x, pad_y) = gfx.renderer.padding();
+        let fonts = &gfx.renderer.fonts;
+        let cols = ((width as f32 - 2.0 * pad_x) / fonts.cell_width).floor().max(1.0) as usize;
+        let rows = ((height as f32 - 2.0 * pad_y) / fonts.cell_height).floor().max(1.0) as usize;
         if cols != self.screen.cols || rows != self.screen.rows {
             self.screen.resize(cols, rows);
             self.pty.resize(cols as u16, rows as u16);
         }
+        gfx.renderer.layout(self.screen.cols, self.screen.rows);
         gfx.window.request_redraw();
     }
 
@@ -367,6 +532,8 @@ impl App {
         let size = match self.gfx.as_mut() {
             Some(gfx) => {
                 gfx.renderer.set_fonts(fonts);
+                let pad = (self.config.padding.0 * scale as f32, self.config.padding.1 * scale as f32);
+                gfx.renderer.set_padding(pad, self.config.dynamic_padding);
                 gfx.window.inner_size()
             }
             None => return,
@@ -403,6 +570,7 @@ impl App {
             BindingAction::ScrollLineDown => self.screen.scroll_view(-1),
             BindingAction::ScrollToTop => self.screen.scroll_to_top(),
             BindingAction::ScrollToBottom => self.screen.reset_view(),
+            BindingAction::ToggleViMode => self.toggle_vi_mode(),
             BindingAction::Nothing => {}
             BindingAction::Chars(bytes) => {
                 self.screen.reset_view();
@@ -433,6 +601,14 @@ impl App {
         }
         if m.ctrl && is_char("v") {
             self.paste();
+            return;
+        }
+        if m.ctrl && m.shift && *key == Key::Named(NamedKey::Space) {
+            self.toggle_vi_mode();
+            return;
+        }
+        if self.vi_mode {
+            self.vi_key(key);
             return;
         }
         if m.shift && !m.ctrl && !m.alt && !self.screen.in_alt_screen() {
@@ -535,8 +711,9 @@ impl App {
     fn view_cell(&self) -> Option<(usize, usize)> {
         let gfx = self.gfx.as_ref()?;
         let fonts = &gfx.renderer.fonts;
-        let col = (self.cursor_pos.0 as f32 / fonts.cell_width).floor().max(0.0) as usize;
-        let row = (self.cursor_pos.1 as f32 / fonts.cell_height).floor().max(0.0) as usize;
+        let (origin_x, origin_y) = gfx.renderer.origin();
+        let col = ((self.cursor_pos.0 as f32 - origin_x) / fonts.cell_width).floor().max(0.0) as usize;
+        let row = ((self.cursor_pos.1 as f32 - origin_y) / fonts.cell_height).floor().max(0.0) as usize;
         Some((col.min(self.screen.cols - 1), row.min(self.screen.rows - 1)))
     }
 
@@ -860,5 +1037,50 @@ mod tests {
         let bytes = encode_mouse(MouseEncoding::Utf8, 0, 200, 0, false);
         assert_eq!(&bytes[..4], b"\x1b[M ");
         assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), "\u{e9}!");
+    }
+}
+
+#[cfg(test)]
+mod vi_tests {
+    use super::*;
+    use winit::keyboard::SmolStr;
+
+    fn ch(s: &str) -> Key {
+        Key::Character(SmolStr::new(s))
+    }
+
+    #[test]
+    fn motions_stay_inside_the_grid() {
+        // 100 logical rows, 80 columns, 24 rows on screen.
+        let act = |key: &Key, cursor| vi_action(key, cursor, 100, 80, 24);
+        assert_eq!(act(&ch("h"), (5, 0)), ViAction::Move((5, 0)));
+        assert_eq!(act(&ch("l"), (5, 79)), ViAction::Move((5, 79)));
+        assert_eq!(act(&ch("k"), (0, 3)), ViAction::Move((0, 3)));
+        assert_eq!(act(&ch("j"), (99, 3)), ViAction::Move((99, 3)));
+        assert_eq!(act(&ch("j"), (10, 3)), ViAction::Move((11, 3)));
+        assert_eq!(act(&ch("$"), (10, 3)), ViAction::Move((10, 79)));
+        assert_eq!(act(&ch("0"), (10, 3)), ViAction::Move((10, 0)));
+        assert_eq!(act(&ch("g"), (50, 3)), ViAction::Move((0, 0)));
+        assert_eq!(act(&ch("G"), (50, 3)), ViAction::Move((99, 0)));
+        assert_eq!(act(&Key::Named(NamedKey::PageUp), (50, 3)), ViAction::Move((27, 3)));
+        assert_eq!(act(&Key::Named(NamedKey::PageDown), (90, 3)), ViAction::Move((99, 3)));
+    }
+
+    #[test]
+    fn keys_map_to_actions() {
+        let act = |key: &Key| vi_action(key, (1, 1), 10, 10, 5);
+        assert_eq!(act(&Key::Named(NamedKey::Escape)), ViAction::Exit);
+        assert_eq!(act(&ch("i")), ViAction::Exit);
+        assert_eq!(act(&ch("v")), ViAction::ToggleSelection);
+        assert_eq!(act(&ch("y")), ViAction::Yank);
+        assert_eq!(act(&ch("x")), ViAction::Ignore);
+    }
+
+    #[test]
+    fn view_follows_the_cursor() {
+        // Rows 20..25 are on screen.
+        assert_eq!(view_top_for(18, 20, 5), 18); // above: show it at the top
+        assert_eq!(view_top_for(24, 20, 5), 20); // on screen: no change
+        assert_eq!(view_top_for(27, 20, 5), 23); // below: show it at the bottom
     }
 }

@@ -33,8 +33,6 @@ impl FaceStyle {
 pub struct FontSet {
     rasterizer: Rasterizer,
     keys: [FontKey; 4],
-    synthetic_italic: bool,
-    synthetic_bold_italic: bool,
     size: Size,
     /// Width of one terminal cell, in pixels.
     pub cell_width: f32,
@@ -61,26 +59,22 @@ impl FontSet {
         };
 
         let family = normal_face.family.clone();
-        // Returns the key, and whether a real face was loaded. fontconfig returns a regular
-        // face for a style it lacks, so a real italic face is only used when the configuration
-        // names one or the system has one (`system_face` checks that).
-        let load_variant = |rasterizer: &mut Rasterizer, configured: &Option<FontFace>, style: &str, auto: bool| -> (FontKey, bool) {
-            let (wanted, real) = match configured {
-                Some(configured) => (Some(configured.clone()), true),
-                None if auto => (system_face(&family, style), true),
-                None => (Some(face(&family, style)), false),
+        // A variant without a real face of its own uses the closest face that has one:
+        // italic uses the normal face, and bold italic uses the bold face.
+        let load_variant = |rasterizer: &mut Rasterizer, configured: &Option<FontFace>, style: &str, auto: bool, fallback: FontKey| -> FontKey {
+            let wanted = match configured {
+                Some(configured) => Some(configured.clone()),
+                None if auto => system_face(&family, style),
+                None => Some(face(&family, style)),
             };
             let Some(wanted) = wanted else {
-                return (normal, false);
+                return fallback;
             };
-            match rasterizer.load_font(&desc(&wanted, style), size) {
-                Ok(key) => (key, real),
-                Err(_) => (normal, false),
-            }
+            rasterizer.load_font(&desc(&wanted, style), size).unwrap_or(fallback)
         };
-        let (bold, _) = load_variant(&mut rasterizer, &faces.bold, "Bold", false);
-        let (italic, italic_real) = load_variant(&mut rasterizer, &faces.italic, "Italic", true);
-        let (bold_italic, bold_italic_real) = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic", true);
+        let bold = load_variant(&mut rasterizer, &faces.bold, "Bold", false, normal);
+        let italic = load_variant(&mut rasterizer, &faces.italic, "Italic", true, normal);
+        let bold_italic = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic", true, bold);
 
         // FreeType only has the size once a glyph has been rasterised, and the metrics
         // are not valid before that. So measure a glyph first and take the cell width
@@ -110,22 +104,11 @@ impl FontSet {
         Ok(FontSet {
             rasterizer,
             keys: [normal, bold, italic, bold_italic],
-            synthetic_italic: !italic_real,
-            synthetic_bold_italic: !bold_italic_real,
             size,
             cell_width,
             cell_height,
             baseline,
         })
-    }
-
-    /// Whether italic text in this style must be slanted in software.
-    pub fn slants(&self, style: FaceStyle) -> bool {
-        match style {
-            FaceStyle::Italic => self.synthetic_italic,
-            FaceStyle::BoldItalic => self.synthetic_bold_italic,
-            _ => false,
-        }
     }
 
     /// Rasterise one character in a face. `None` if the font system gives nothing for it.

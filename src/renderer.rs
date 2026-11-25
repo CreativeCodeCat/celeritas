@@ -18,7 +18,6 @@ const MODE_SOLID: f32 = 0.0;
 /// Vertex mode: a glyph, whose alpha comes from the atlas.
 const MODE_GLYPH: f32 = 1.0;
 /// Horizontal shift of the top of an italic glyph, as a fraction of its height (about 11 degrees).
-const ITALIC_SKEW: f32 = 0.2;
 /// Floats per vertex: position (2), atlas coordinates (2), colour (4), mode (1).
 const FLOATS_PER_VERTEX: usize = 9;
 
@@ -100,6 +99,12 @@ pub struct Renderer {
     pub fonts: FontSet,
     /// Window opacity: the default background is drawn at this alpha.
     pub opacity: f32,
+    /// Blank space around the grid, in physical pixels (`window.padding`, scaled).
+    padding: (f32, f32),
+    /// Share spare window space evenly around the grid (`window.dynamic_padding`).
+    dynamic_padding: bool,
+    /// Where the top-left cell of the grid is drawn, in physical pixels.
+    origin: (f32, f32),
     vertices: Vec<f32>,
     size: (u32, u32),
 }
@@ -156,10 +161,44 @@ impl Renderer {
                 glyphs: HashMap::new(),
                 fonts,
                 opacity: 1.0,
+                padding: (0.0, 0.0),
+                dynamic_padding: false,
+                origin: (0.0, 0.0),
                 vertices: Vec::new(),
                 size,
             })
         }
+    }
+
+    /// Set the padding (physical pixels) and whether spare space is shared around the grid.
+    /// Call `layout` afterwards.
+    pub fn set_padding(&mut self, padding: (f32, f32), dynamic: bool) {
+        self.padding = padding;
+        self.dynamic_padding = dynamic;
+    }
+
+    /// Place a grid of `cols` by `rows` cells in the window, leaving the padding around it.
+    pub fn layout(&mut self, cols: usize, rows: usize) {
+        let (cw, ch) = (self.fonts.cell_width, self.fonts.cell_height);
+        let (pad_x, pad_y) = self.padding;
+        let (mut x, mut y) = (pad_x, pad_y);
+        if self.dynamic_padding {
+            let spare_x = self.size.0 as f32 - 2.0 * pad_x - cols as f32 * cw;
+            let spare_y = self.size.1 as f32 - 2.0 * pad_y - rows as f32 * ch;
+            x += (spare_x / 2.0).floor().max(0.0);
+            y += (spare_y / 2.0).floor().max(0.0);
+        }
+        self.origin = (x, y);
+    }
+
+    /// The padding (physical pixels) around the grid.
+    pub fn padding(&self) -> (f32, f32) {
+        self.padding
+    }
+
+    /// Where the top-left cell of the grid is drawn, in physical pixels.
+    pub fn origin(&self) -> (f32, f32) {
+        self.origin
     }
 
     /// The size of the drawing area, in pixels.
@@ -226,7 +265,7 @@ impl Renderer {
             for x in 0..screen.cols {
                 let cell = screen.visible_cell(x, y);
                 let (_, bg) = cell_colors(&cell, colors);
-                let (px, py) = (x as f32 * cw, y as f32 * ch);
+                let (px, py) = (self.origin.0 + x as f32 * cw, self.origin.1 + y as f32 * ch);
                 let selected = overlay.selection.is_some_and(|(s, e)| {
                     let p = (top + y, x);
                     if overlay.selection_block {
@@ -248,18 +287,16 @@ impl Renderer {
             for x in 0..screen.cols {
                 let cell = screen.visible_cell(x, y);
                 let (fg, _) = cell_colors(&cell, colors);
-                let (px, py) = (x as f32 * cw, y as f32 * ch);
+                let (px, py) = (self.origin.0 + x as f32 * cw, self.origin.1 + y as f32 * ch);
 
                 // '\0' is the right half of a wide character; its glyph is drawn by the left half.
                 if cell.ch != ' ' && cell.ch != '\0' {
                     let style = FaceStyle::new(cell.bold, cell.italic);
-                    // Italic text is slanted in software when the font has no italic face.
-                    let skew = if self.fonts.slants(style) { ITALIC_SKEW } else { 0.0 };
                     // Combining marks are drawn over their base character, at the same origin.
                     for ch in std::iter::once(cell.ch).chain(cell.marks.into_iter().flatten()) {
                         if let Some(glyph) = self.glyph(ch, style) {
                             if glyph.width > 0.0 && glyph.height > 0.0 {
-                                push_quad_skewed(
+                                push_quad(
                                     &mut self.vertices,
                                     px + glyph.left,
                                     py + baseline - glyph.top,
@@ -268,7 +305,6 @@ impl Renderer {
                                     glyph.uv,
                                     rgba(fg, 1.0),
                                     MODE_GLYPH,
-                                    skew,
                                 );
                             }
                         }
@@ -432,29 +468,12 @@ fn alpha_mask(glyph: &crossfont::RasterizedGlyph) -> Vec<u8> {
 
 /// Append two triangles covering a rectangle.
 fn push_quad(v: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], color: [f32; 4], mode: f32) {
-    push_quad_skewed(v, x, y, w, h, uv, color, mode, 0.0);
-}
-
-/// Like `push_quad`, but the top edge is shifted right by `skew * h` (for italics).
-#[allow(clippy::too_many_arguments)]
-fn push_quad_skewed(
-    v: &mut Vec<f32>,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    uv: [f32; 4],
-    color: [f32; 4],
-    mode: f32,
-    skew: f32,
-) {
     let [u0, v0, u1, v1] = uv;
-    let top = skew * h;
     let corners = [
-        (x + top, y, u0, v0),
-        (x + top + w, y, u1, v0),
+        (x, y, u0, v0),
+        (x + w, y, u1, v0),
         (x + w, y + h, u1, v1),
-        (x + top, y, u0, v0),
+        (x, y, u0, v0),
         (x + w, y + h, u1, v1),
         (x, y + h, u0, v1),
     ];
