@@ -15,6 +15,22 @@ use mlua::{Lua, Table};
 /// The config written on first launch. It is the same as `Config::default()`.
 const DEFAULT_CONFIG: &str = include_str!("../dist/celeritas.lua");
 
+/// A font face, as fontconfig names it: a family and an optional style such as "Bold".
+#[derive(Clone, PartialEq, Debug)]
+pub struct FontFace {
+    pub family: String,
+    pub style: Option<String>,
+}
+
+/// The four faces text can use. Unset faces are derived from `normal`.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct FontFaces {
+    pub normal: Option<FontFace>,
+    pub bold: Option<FontFace>,
+    pub italic: Option<FontFace>,
+    pub bold_italic: Option<FontFace>,
+}
+
 /// An 8-bit RGB colour.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -38,6 +54,7 @@ pub struct Config {
     pub columns: usize,
     pub lines: usize,
     pub font_size: f32,
+    pub faces: FontFaces,
     pub colors: Colors,
     /// Shell to run. `None` means `$SHELL`.
     pub shell: Option<String>,
@@ -57,6 +74,7 @@ impl Default for Config {
             columns: 80,
             lines: 24,
             font_size: 14.0,
+            faces: FontFaces::default(),
             colors: Colors {
                 foreground: Rgb(0xdd, 0xdd, 0xdd),
                 background: Rgb(0x1e, 0x1e, 0x1e),
@@ -169,6 +187,12 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
         if let Some(size) = font.get::<Option<f32>>("size")? {
             config.font_size = size.max(1.0);
         }
+        config.faces = FontFaces {
+            normal: read_face(&font, "normal")?,
+            bold: read_face(&font, "bold")?,
+            italic: read_face(&font, "italic")?,
+            bold_italic: read_face(&font, "bold_italic")?,
+        };
     }
 
     if let Some(colors) = root.get::<Option<Table>>("colors")? {
@@ -192,6 +216,18 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     }
 
     Ok(config)
+}
+
+/// Read `font.<name> = { family = "...", style = "..." }`, if present.
+fn read_face(font: &Table, name: &str) -> Result<Option<FontFace>, Box<dyn Error>> {
+    let Some(face) = font.get::<Option<Table>>(name)? else {
+        return Ok(None);
+    };
+    let family = face
+        .get::<Option<String>>("family")?
+        .ok_or_else(|| format!("font.{name} needs a family"))?;
+    let style = face.get::<Option<String>>("style")?;
+    Ok(Some(FontFace { family, style }))
 }
 
 fn apply_colors(colors: &Table, out: &mut Colors) -> Result<(), Box<dyn Error>> {
@@ -279,6 +315,20 @@ mod tests {
         assert_eq!(config.colors.normal[1], Rgb(0xBF, 0x61, 0x6A));
         assert_eq!(config.colors.bright[6], Rgb(0x8F, 0xBC, 0xBB));
         assert!(!config.colors.draw_bold_text_with_bright_colors);
+    }
+
+    #[test]
+    fn reads_font_faces() {
+        let config = parse(
+            r#"return { font = { size = 12, normal = { family = "Hack Nerd Font Mono" },
+                 bold = { family = "Hack Nerd Font Mono", style = "Bold" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(config.font_size, 12.0);
+        assert_eq!(config.faces.normal.unwrap().family, "Hack Nerd Font Mono");
+        let bold = config.faces.bold.unwrap();
+        assert_eq!(bold.style.as_deref(), Some("Bold"));
+        assert!(config.faces.italic.is_none());
     }
 
     #[test]

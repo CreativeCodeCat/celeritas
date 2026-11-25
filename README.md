@@ -19,14 +19,18 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 2. **Reader thread** (`src/main.rs`): reads the shell's output and sends it over a channel to the UI.
 3. **Parser** (`vte`, `src/screen.rs`): decodes escape sequences and updates the screen model.
 4. **Screen** (`src/screen.rs`): a grid of cells plus the cursor. It also builds replies to the shell's queries.
-5. **Window** (`eframe` / `egui`, `src/gui.rs`): draws the grid every frame and turns key presses and paste into bytes written back to the PTY.
-6. **Config** (`mlua`, `src/config.rs`): reads the Lua configuration at startup.
+5. **Window and input** (`winit` + `glutin`, `src/app.rs`, `src/input.rs`): creates the window and OpenGL context, turns key presses, mouse input and clipboard shortcuts into bytes for the PTY, and handles selection and scrolling.
+6. **Renderer** (`glow` / OpenGL, `src/renderer.rs`): draws the grid each frame from one vertex list, with glyphs in a texture atlas.
+7. **Fonts** (`crossfont`, `src/font.rs`): loads the four faces (normal, bold, italic, bold italic) through fontconfig and rasterises glyphs. Missing characters fall back to other installed fonts, which covers Nerd Font icons.
+8. **Clipboard** (`copypasta`, `src/clipboard.rs`): the X11 clipboard, which XWayland shares with Wayland apps.
+9. **Config** (`mlua`, `src/config.rs`): reads the Lua configuration at startup.
 
 ## Requirements
 
-- Linux with a Wayland or X11 desktop
+- Linux with a Wayland or X11 desktop and OpenGL 3.3 support
 - A Rust toolchain (`cargo`), from [rustup](https://rustup.rs)
 - A C compiler (the Lua interpreter is built from source)
+- The FreeType and fontconfig development libraries (used by crossfont)
 - `make` (optional, for the install targets)
 
 ## Build and run
@@ -67,7 +71,6 @@ This is a learning-sized emulator, not a replacement for kitty or alacritty:
 - No scroll regions, and no mouse reporting to programs (the mouse only scrolls and selects)
 - Selection is by character cells only (no word or line selection); wrapped lines are copied with a newline
 - Bold text is drawn in the bright colours, not with a bold font
-- Fonts come from egui's built-in set, so some symbol glyphs (such as Nerd Font icons) show as boxes
 - Italic and dim text are not drawn differently; combining marks are dropped
 - Unsupported Alacritty options (key bindings, cursor style, opacity, font families) are ignored
 

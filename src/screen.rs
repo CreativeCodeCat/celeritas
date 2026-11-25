@@ -26,6 +26,8 @@ pub struct Cell {
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
     pub reverse: bool,
     pub underline: bool,
     pub strikethrough: bool,
@@ -38,6 +40,8 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
+            dim: false,
+            italic: false,
             reverse: false,
             underline: false,
             strikethrough: false,
@@ -296,7 +300,13 @@ impl Screen {
             match v {
                 0 => self.pen = Cell::default(),
                 1 => self.pen.bold = true,
-                22 => self.pen.bold = false,
+                2 => self.pen.dim = true,
+                3 => self.pen.italic = true,
+                22 => {
+                    self.pen.bold = false;
+                    self.pen.dim = false;
+                }
+                23 => self.pen.italic = false,
                 4 => self.pen.underline = true,
                 24 => self.pen.underline = false,
                 7 => self.pen.reverse = true,

@@ -1,97 +1,35 @@
 //! celeritas: a small terminal emulator with its own window.
 //!
-//! The user's shell runs inside a pseudo-terminal (PTY). Its output is parsed
-//! by `vte` and drawn into a virtual `Screen`, which is shown in a window with
-//! `egui`. Keystrokes from the window are forwarded back into the PTY.
+//! The user's shell runs inside a pseudo-terminal (PTY). Its output is parsed by `vte`
+//! into a virtual `Screen`, which is drawn with OpenGL (`renderer`) in a window made by
+//! `winit`. Keystrokes and mouse input from the window are forwarded back to the shell.
 
+mod app;
+mod clipboard;
 mod config;
-mod gui;
+mod font;
+mod input;
+mod pty;
+mod renderer;
 mod screen;
 
-use std::io::Read;
-use std::sync::mpsc;
-use std::thread;
+use std::error::Error;
+use std::path::PathBuf;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use winit::event_loop::EventLoop;
 
-/// Messages from the PTY reader thread to the UI.
-pub enum PtyMsg {
-    Data(Vec<u8>),
-    Closed,
-}
+use app::App;
+use config::Config;
+use pty::Pty;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = config::Config::load();
+fn main() -> Result<(), Box<dyn Error>> {
+    let config = Config::load();
+    let event_loop = EventLoop::<()>::with_user_event().build()?;
+    let pty = Pty::spawn(&config, config.columns as u16, config.lines as u16, event_loop.create_proxy())?;
+    // Developer aid: save one frame to this path (binary PPM) and exit.
+    let screenshot = std::env::var_os("CELERITAS_SCREENSHOT").map(PathBuf::from);
 
-    // 1. Create the pseudo-terminal pair. The window resizes it to fit on the first frame.
-    let pty = native_pty_system();
-    let size = PtySize {
-        rows: config.lines as u16,
-        cols: config.columns as u16,
-        pixel_width: 0,
-        pixel_height: 0,
-    };
-    let pair = pty.openpty(size)?;
-
-    // 2. Start the user's shell attached to the PTY slave side.
-    let shell = config
-        .shell
-        .clone()
-        .or_else(|| std::env::var("SHELL").ok())
-        .unwrap_or_else(|| "/bin/sh".to_string());
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.env("TERM", "xterm-256color");
-    for (key, value) in &config.env {
-        cmd.env(key, value);
-    }
-    match &config.working_directory {
-        Some(dir) => cmd.cwd(dir),
-        None => {
-            if let Ok(cwd) = std::env::current_dir() {
-                cmd.cwd(cwd);
-            }
-        }
-    }
-    let child = pair.slave.spawn_command(cmd)?;
-    drop(pair.slave); // must be dropped so we see EOF when the shell exits
-
-    // 3. Reader thread: PTY output -> channel (blocking reads stay off the UI thread).
-    let mut reader = pair.master.try_clone_reader()?;
-    let (tx, rx) = mpsc::channel::<PtyMsg>();
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => {
-                    let _ = tx.send(PtyMsg::Closed);
-                    break;
-                }
-                Ok(n) => {
-                    if tx.send(PtyMsg::Data(buf[..n].to_vec())).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    // 4. Writer for keystrokes going into the shell.
-    let writer = pair.master.take_writer()?;
-
-    // 5. Open the window and run the UI until it is closed or the shell exits.
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title(config.title.clone())
-            .with_app_id("celeritas")
-            .with_decorations(config.decorations)
-            .with_inner_size([800.0, 500.0]), // resized to the configured grid on the first frame
-        ..Default::default()
-    };
-    let master = pair.master;
-    eframe::run_native(
-        "celeritas",
-        options,
-        Box::new(move |_cc| Ok(Box::new(gui::Terminal::new(config, rx, master, writer, child)))),
-    )?;
+    let mut app = App::new(config, pty, screenshot);
+    event_loop.run_app(&mut app)?;
     Ok(())
 }
