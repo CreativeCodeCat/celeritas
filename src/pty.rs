@@ -2,7 +2,9 @@
 
 use std::error::Error;
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::thread;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -21,6 +23,8 @@ pub struct Pty {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<PtyMsg>,
+    /// Set while a wake-up is queued for the event loop and not yet acknowledged.
+    wake_pending: Arc<AtomicBool>,
 }
 
 impl Pty {
@@ -64,6 +68,8 @@ impl Pty {
 
         let mut reader = pair.master.try_clone_reader()?;
         let (tx, rx) = mpsc::channel::<PtyMsg>();
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let pending = Arc::clone(&wake_pending);
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -75,7 +81,11 @@ impl Pty {
                 if tx.send(msg).is_err() {
                     break;
                 }
-                let _ = wake.send_event(());
+                // One wake-up at a time: a flood of output must not queue an event per
+                // chunk, or the event loop never gets round to drawing.
+                if !pending.swap(true, Ordering::AcqRel) {
+                    let _ = wake.send_event(());
+                }
                 if closed {
                     break;
                 }
@@ -83,7 +93,13 @@ impl Pty {
         });
 
         let writer = pair.master.take_writer()?;
-        Ok(Pty { master: pair.master, writer, child, rx })
+        Ok(Pty { master: pair.master, writer, child, rx, wake_pending })
+    }
+
+    /// Mark the queued wake-up as handled. Call this before reading the messages, so that
+    /// output arriving while they are read queues another wake-up.
+    pub fn acknowledge_wake(&self) {
+        self.wake_pending.store(false, Ordering::Release);
     }
 
     /// The next message from the shell, if one is waiting.

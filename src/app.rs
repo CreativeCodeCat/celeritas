@@ -17,7 +17,7 @@ use raw_window_handle::HasWindowHandle;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::platform::x11::WindowAttributesExtX11;
@@ -41,6 +41,20 @@ fn debug_enabled() -> bool {
 const WHEEL_LINES: f32 = 3.0;
 /// With `CELERITAS_SCREENSHOT` set, the window saves its first frame after this many redraws.
 const SCREENSHOT_FRAME: u32 = 10;
+/// The shortest time between two frames, so output is drawn at most 60 times a second.
+const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+/// How long one pass over the shell's output may take before the window gets a turn.
+const PUMP_BUDGET: Duration = Duration::from_millis(8);
+
+/// What `App::pump_output` found.
+enum Pumped {
+    /// All the output so far has been read.
+    Idle,
+    /// The time budget ran out with output still waiting.
+    Busy,
+    /// The shell has exited.
+    Exited,
+}
 
 /// A mouse selection in logical screen coordinates: (row, column) pairs.
 #[derive(Clone, Copy, PartialEq)]
@@ -89,6 +103,12 @@ pub struct App {
     last_report: Option<(usize, usize)>,
     screenshot: Option<PathBuf>,
     frames: u32,
+    /// When the last frame was drawn, for the frame cap.
+    last_frame: Option<Instant>,
+    /// A redraw came too soon after the last frame; it runs once the next frame is due.
+    redraw_deferred: bool,
+    /// The shell has more output waiting than one pump could read.
+    pty_busy: bool,
 }
 
 impl App {
@@ -111,6 +131,9 @@ impl App {
             last_report: None,
             screenshot,
             frames: 0,
+            last_frame: None,
+            redraw_deferred: false,
+            pty_busy: false,
         }
     }
 
@@ -163,8 +186,11 @@ impl App {
         Ok(Graphics { window, surface, context, renderer })
     }
 
-    /// Feed the shell's output to the screen. Returns `true` once the shell has exited.
-    fn pump_output(&mut self) -> bool {
+    /// Feed the shell's output to the screen, for at most `PUMP_BUDGET` at a time so the
+    /// window keeps responding while a program floods the terminal.
+    fn pump_output(&mut self) -> Pumped {
+        self.pty.acknowledge_wake();
+        let start = Instant::now();
         loop {
             match self.pty.try_recv() {
                 Ok(PtyMsg::Data(bytes)) => {
@@ -176,9 +202,12 @@ impl App {
                     if !replies.is_empty() {
                         let _ = self.pty.write(&replies);
                     }
+                    if start.elapsed() >= PUMP_BUDGET {
+                        return Pumped::Busy;
+                    }
                 }
-                Ok(PtyMsg::Closed) | Err(TryRecvError::Disconnected) => return true,
-                Err(TryRecvError::Empty) => return false,
+                Ok(PtyMsg::Closed) | Err(TryRecvError::Disconnected) => return Pumped::Exited,
+                Err(TryRecvError::Empty) => return Pumped::Idle,
             }
         }
     }
@@ -190,6 +219,11 @@ impl App {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        // Frame cap: too soon after the last frame, so draw later (see `about_to_wait`).
+        if self.last_frame.is_some_and(|last| last.elapsed() < FRAME_INTERVAL) {
+            self.redraw_deferred = true;
+            return;
+        }
         let Some(gfx) = self.gfx.as_mut() else {
             return;
         };
@@ -213,6 +247,7 @@ impl App {
             }
         }
         let _ = gfx.surface.swap_buffers(&gfx.context);
+        self.last_frame = Some(Instant::now());
         if self.screenshot.is_some() {
             // Keep drawing until the screenshot frame is reached.
             gfx.window.request_redraw();
@@ -471,6 +506,38 @@ impl App {
 }
 
 impl ApplicationHandler<()> for App {
+    /// Pumps output while the shell has more than one pass can read, and draws a frame
+    /// once one is due (the frame cap). Drawing here, rather than waiting for winit's
+    /// redraw event, keeps the frame rate steady while a program floods the terminal.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.pty_busy {
+            match self.pump_output() {
+                Pumped::Exited => {
+                    event_loop.exit();
+                    return;
+                }
+                Pumped::Busy => {}
+                Pumped::Idle => self.pty_busy = false,
+            }
+            // Output arrived, so the screen may have changed.
+            self.redraw_deferred = true;
+        }
+        if !self.redraw_deferred {
+            return;
+        }
+        let due = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
+        if Instant::now() >= due {
+            self.redraw_deferred = false;
+            self.redraw(event_loop);
+        }
+        if self.pty_busy {
+            event_loop.set_control_flow(ControlFlow::Poll);
+        } else if self.redraw_deferred {
+            let next = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
@@ -490,9 +557,13 @@ impl ApplicationHandler<()> for App {
 
     /// The reader thread woke us: the shell printed something.
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
-        if self.pump_output() {
-            event_loop.exit();
-            return;
+        match self.pump_output() {
+            Pumped::Exited => {
+                event_loop.exit();
+                return;
+            }
+            Pumped::Busy => self.pty_busy = true,
+            Pumped::Idle => {}
         }
         self.request_redraw();
     }
