@@ -231,7 +231,7 @@ impl App {
     }
 
     /// Re-read the configuration file if it has changed (`general.live_config_reload`).
-    fn check_config(&mut self) {
+    fn check_config(&mut self, event_loop: &ActiveEventLoop) {
         self.next_config_check = Instant::now() + CONFIG_CHECK_INTERVAL;
         let Some(path) = self.config_file.clone() else {
             return;
@@ -246,46 +246,56 @@ impl App {
                 if let Err(e) = new.apply_args(self.cli_args.clone()) {
                     eprintln!("celeritas: {e}");
                 }
-                self.apply_config(new);
+                self.apply_config(event_loop, new);
             }
             Err(e) => eprintln!("celeritas: {}: {e}", path.display()),
         }
     }
 
-    /// Use a newly read configuration. Settings that are fixed when the window is made (font,
-    /// size, and whether the window is transparent) keep their current values.
-    fn apply_config(&mut self, mut new: Config) {
+    /// Use a newly read configuration. The font, size and window size keep their current
+    /// values, which are fixed when the window is made. A change to transparency makes a new
+    /// window; the shell and the screen contents carry over.
+    fn apply_config(&mut self, event_loop: &ActiveEventLoop, mut new: Config) {
         let fixed_changed = new.faces != self.config.faces
             || new.font_size != self.config.font_size
             || new.columns != self.config.columns
-            || new.lines != self.config.lines
-            || (new.opacity < 1.0) != (self.config.opacity < 1.0);
+            || new.lines != self.config.lines;
         if fixed_changed {
-            eprintln!("celeritas: font, size and transparency changes take effect after a restart");
+            eprintln!("celeritas: font and size changes take effect after a restart");
         }
         new.faces = self.config.faces.clone();
         new.font_size = self.config.font_size;
         new.columns = self.config.columns;
         new.lines = self.config.lines;
-        if (new.opacity < 1.0) != (self.config.opacity < 1.0) {
-            new.opacity = self.config.opacity;
-        }
-
-        if let Some(gfx) = self.gfx.as_mut() {
-            if new.title != self.config.title {
-                gfx.window.set_title(&new.title);
-            }
-            if new.decorations != self.config.decorations {
-                gfx.window.set_decorations(new.decorations);
-            }
-            if new.decorations_theme != self.config.decorations_theme {
-                gfx.window.set_theme(new.decorations_theme);
-            }
-            gfx.renderer.opacity = new.opacity;
-        }
         self.screen.set_history_limit(new.scrollback);
         self.screen.set_word_separators(&new.semantic_escape_chars);
-        self.config = new;
+
+        if (new.opacity < 1.0) != (self.config.opacity < 1.0) {
+            self.config = new;
+            self.gfx = None;
+            match self.create_graphics(event_loop) {
+                Ok(gfx) => self.gfx = Some(gfx),
+                Err(e) => {
+                    eprintln!("celeritas: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        } else {
+            if let Some(gfx) = self.gfx.as_mut() {
+                if new.title != self.config.title {
+                    gfx.window.set_title(&new.title);
+                }
+                if new.decorations != self.config.decorations {
+                    gfx.window.set_decorations(new.decorations);
+                }
+                if new.decorations_theme != self.config.decorations_theme {
+                    gfx.window.set_theme(new.decorations_theme);
+                }
+                gfx.renderer.opacity = new.opacity;
+            }
+            self.config = new;
+        }
         self.request_redraw();
     }
 
@@ -654,7 +664,7 @@ impl ApplicationHandler<()> for App {
             self.redraw_deferred = true;
         }
         if Instant::now() >= self.next_config_check {
-            self.check_config();
+            self.check_config(event_loop);
         }
         if self.redraw_deferred {
             let due = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
