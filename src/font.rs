@@ -61,19 +61,26 @@ impl FontSet {
         };
 
         let family = normal_face.family.clone();
-        // Returns the key, and whether a real face was loaded from the configuration.
-        let load_variant = |rasterizer: &mut Rasterizer, configured: &Option<FontFace>, style: &str| -> (FontKey, bool) {
-            let wanted = configured.clone().unwrap_or_else(|| face(&family, style));
+        // Returns the key, and whether a real face was loaded. fontconfig returns a regular
+        // face for a style it lacks, so a real italic face is only used when the configuration
+        // names one or the system has one (`system_face` checks that).
+        let load_variant = |rasterizer: &mut Rasterizer, configured: &Option<FontFace>, style: &str, auto: bool| -> (FontKey, bool) {
+            let (wanted, real) = match configured {
+                Some(configured) => (Some(configured.clone()), true),
+                None if auto => (system_face(&family, style), true),
+                None => (Some(face(&family, style)), false),
+            };
+            let Some(wanted) = wanted else {
+                return (normal, false);
+            };
             match rasterizer.load_font(&desc(&wanted, style), size) {
-                Ok(key) => (key, configured.is_some()),
+                Ok(key) => (key, real),
                 Err(_) => (normal, false),
             }
         };
-        let (bold, _) = load_variant(&mut rasterizer, &faces.bold, "Bold");
-        // fontconfig returns a regular face for a style it lacks, so a real italic face
-        // only counts when the configuration names one.
-        let (italic, italic_real) = load_variant(&mut rasterizer, &faces.italic, "Italic");
-        let (bold_italic, bold_italic_real) = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic");
+        let (bold, _) = load_variant(&mut rasterizer, &faces.bold, "Bold", false);
+        let (italic, italic_real) = load_variant(&mut rasterizer, &faces.italic, "Italic", true);
+        let (bold_italic, bold_italic_real) = load_variant(&mut rasterizer, &faces.bold_italic, "Bold Italic", true);
 
         // FreeType only has the size once a glyph has been rasterised, and the metrics
         // are not valid before that. So measure a glyph first and take the cell width
@@ -135,6 +142,31 @@ impl FontSet {
             Err(_) => None,
         }
     }
+}
+
+/// The families fontconfig has a face for, matching `pattern`.
+fn families_matching(pattern: &str) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("fc-list").arg(pattern).arg("family").output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split(',').next())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// A real face in `style` (such as "Italic") for the normal face: the same family if the
+/// system has one, otherwise the first monospace family that has one. `None` if there is none.
+fn system_face(family: &str, style: &str) -> Option<FontFace> {
+    if families_matching(&format!("{family}:style={style}")).iter().any(|f| f == family) {
+        return Some(face(family, style));
+    }
+    families_matching(&format!(":spacing=mono:style={style}"))
+        .into_iter()
+        .next()
+        .map(|other| face(&other, style))
 }
 
 fn face(family: &str, style: &str) -> FontFace {

@@ -89,7 +89,7 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 
 This is a learning-sized emulator, not a full-featured terminal:
 
-- Italic text is slanted in software when no italic face is installed. Install an italic version of your font and set `font.italic` to use it
+- Italic text uses a real italic face from the system: the normal font's own, or else the first monospace font that has one. Only if the system has no italic monospace face is italic text slanted in software. Set `font.italic` to choose a specific face
 - `window.dynamic_padding` is not supported yet, because celeritas has no window padding. It is ignored
 - `cursor.vi_mode_style` has no effect, because celeritas has no vi mode
 - Other terminal modes are accepted and ignored
