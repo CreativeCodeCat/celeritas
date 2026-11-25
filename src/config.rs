@@ -2,7 +2,7 @@
 //!
 //! The file lives at `$XDG_CONFIG_HOME/celeritas/celeritas.lua` (or
 //! `~/.config/celeritas/celeritas.lua`). It must return a table with the same
-//! layout as Alacritty's TOML config. Anything left out uses the built-in default.
+//! grouped into sections (`window`, `font`, `colors`, ...). Anything left out uses the built-in default.
 //! Note that the file is Lua code, so it runs with your user's permissions.
 
 use std::error::Error;
@@ -31,6 +31,17 @@ pub struct FontFaces {
     pub bold: Option<FontFace>,
     pub italic: Option<FontFace>,
     pub bold_italic: Option<FontFace>,
+}
+
+/// What the middle mouse button does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MiddleClick {
+    /// Nothing.
+    None,
+    /// Paste the primary selection (the text last selected with the mouse).
+    PasteSelection,
+    /// Paste the clipboard.
+    Paste,
 }
 
 /// The shape of the cursor.
@@ -121,6 +132,14 @@ pub struct Config {
     pub hide_mouse_when_typing: bool,
     /// Copy a selection to the clipboard as soon as it is dragged out (`selection.save_to_clipboard`).
     pub save_selection_to_clipboard: bool,
+    /// Cursor thickness as a fraction of the cell, for underline and beam (`cursor.thickness`).
+    pub cursor_thickness: f32,
+    /// Draw a block cursor as an outline while the window is unfocused (`cursor.unfocused_hollow`).
+    pub cursor_unfocused_hollow: bool,
+    /// Characters that end a word for double-click selection (`selection.semantic_escape_chars`).
+    pub semantic_escape_chars: String,
+    /// What the middle mouse button does (`mouse.bindings`).
+    pub middle_click: MiddleClick,
 }
 
 impl Default for Config {
@@ -169,13 +188,17 @@ impl Default for Config {
             scroll_lines: 3,
             hide_mouse_when_typing: false,
             save_selection_to_clipboard: false,
+            cursor_thickness: 0.15,
+            cursor_unfocused_hollow: true,
+            semantic_escape_chars: ",│`|:\"' ()[]{}<>\t".to_string(),
+            middle_click: MiddleClick::PasteSelection,
         }
     }
 }
 
 impl Config {
-    /// Apply command-line options, which override the configuration file. The spellings
-    /// follow Alacritty, so window-manager rules written for it keep working:
+    /// Apply command-line options, which override the configuration file. The option names
+    /// are kept stable, so window-manager rules keep working:
     /// `--title TITLE`, `--class INSTANCE[,GENERAL]`, and `-e PROGRAM ARGS...` (which must
     /// come last, since everything after it is the program's own arguments).
     pub fn apply_args<I: IntoIterator<Item = String>>(&mut self, args: I) -> Result<(), String> {
@@ -254,7 +277,7 @@ fn load_file(path: &PathBuf) -> Result<Config, Box<dyn Error>> {
 }
 
 /// Run the config source and read its settings.
-/// `"a,b"` is instance `a` and general `b`; `"a"` sets both to `a`, as Alacritty does.
+/// `"a,b"` is instance `a` and general `b`; `"a"` sets both to `a`.
 fn parse_class(value: &str) -> (String, String) {
     match value.split_once(',') {
         Some((instance, general)) => (instance.to_string(), general.to_string()),
@@ -297,7 +320,7 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
             let general = class.get::<Option<String>>("general")?;
             match (instance, general) {
                 (Some(instance), Some(general)) => config.class = Some((instance, general)),
-                // One name given: use it for both, as Alacritty does.
+                // One name given: use it for both.
                 (Some(name), None) | (None, Some(name)) => config.class = Some((name.clone(), name)),
                 (None, None) => {}
             }
@@ -333,11 +356,29 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
         if let Some(hide) = mouse.get::<Option<bool>>("hide_when_typing")? {
             config.hide_mouse_when_typing = hide;
         }
+        if let Some(list) = mouse.get::<Option<Table>>("bindings")? {
+            for entry in list.sequence_values::<Table>() {
+                let entry = entry?;
+                let button = entry.get::<Option<String>>("mouse")?.unwrap_or_default();
+                if button.eq_ignore_ascii_case("Middle") {
+                    let action = entry.get::<Option<String>>("action")?.unwrap_or_default();
+                    config.middle_click = match action.as_str() {
+                        "PasteSelection" => MiddleClick::PasteSelection,
+                        "Paste" => MiddleClick::Paste,
+                        "None" => MiddleClick::None,
+                        other => return Err(format!("unknown mouse action {other:?}").into()),
+                    };
+                }
+            }
+        }
     }
 
     if let Some(selection) = root.get::<Option<Table>>("selection")? {
         if let Some(save) = selection.get::<Option<bool>>("save_to_clipboard")? {
             config.save_selection_to_clipboard = save;
+        }
+        if let Some(chars) = selection.get::<Option<String>>("semantic_escape_chars")? {
+            config.semantic_escape_chars = chars;
         }
     }
 
@@ -357,6 +398,12 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
                 "beam" => CursorStyle::Beam,
                 other => return Err(format!("unknown cursor style {other:?}").into()),
             };
+        }
+        if let Some(thickness) = cursor.get::<Option<f32>>("thickness")? {
+            config.cursor_thickness = thickness.clamp(0.0, 1.0);
+        }
+        if let Some(hollow) = cursor.get::<Option<bool>>("unfocused_hollow")? {
+            config.cursor_unfocused_hollow = hollow;
         }
     }
 
@@ -482,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_alacritty_style_layout() {
+    fn reads_sectioned_layout() {
         let config = parse(
             r##"
             local nord = { bg = "0x2E3440" }
@@ -583,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn alacritty_style_options() {
+    fn command_line_options() {
         let c = args(&["--title=scratchpad_terminal", "--class=scratchpad_terminal,scratchpad_terminal"]).unwrap();
         assert_eq!(c.title, "scratchpad_terminal");
         assert_eq!(c.class, Some(("scratchpad_terminal".to_string(), "scratchpad_terminal".to_string())));
@@ -622,5 +669,23 @@ mod tests {
 
         let c = parse("return { window = { class = { general = 'only' } } }").unwrap();
         assert_eq!(c.class, Some(("only".to_string(), "only".to_string())));
+    }
+
+    #[test]
+    fn reads_cursor_selection_and_middle_click() {
+        let c = parse(
+            "return { cursor = { thickness = 0.4, unfocused_hollow = false }, \
+             selection = { semantic_escape_chars = '-,' }, \
+             mouse = { bindings = { { mouse = 'Middle', action = 'Paste' } } } }",
+        )
+        .unwrap();
+        assert_eq!(c.cursor_thickness, 0.4);
+        assert!(!c.cursor_unfocused_hollow);
+        assert_eq!(c.semantic_escape_chars, "-,");
+        assert_eq!(c.middle_click, MiddleClick::Paste);
+
+        let c = parse("return { mouse = { bindings = { { mouse = 'Middle', action = 'None' } } } }").unwrap();
+        assert_eq!(c.middle_click, MiddleClick::None);
+        assert!(parse("return { mouse = { bindings = { { mouse = 'Middle', action = 'Nope' } } } }").is_err());
     }
 }

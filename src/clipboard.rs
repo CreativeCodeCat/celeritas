@@ -1,9 +1,12 @@
 //! The system clipboard, via copypasta.
 
+use copypasta::x11_clipboard::{Primary, X11ClipboardContext};
 use copypasta::{ClipboardContext, ClipboardProvider};
 
 pub struct Clipboard {
     provider: Box<dyn ClipboardProvider>,
+    /// The X11 primary selection: set by selecting text, pasted with the middle button.
+    primary: Option<Box<dyn ClipboardProvider>>,
 }
 
 impl Clipboard {
@@ -14,7 +17,10 @@ impl Clipboard {
     /// observed to crash on exit, so it is not used.)
     pub fn new() -> Option<Clipboard> {
         let provider = ClipboardContext::new().ok()?;
-        Some(Clipboard { provider: Box::new(provider) })
+        let primary = X11ClipboardContext::<Primary>::new()
+            .ok()
+            .map(|p| Box::new(p) as Box<dyn ClipboardProvider>);
+        Some(Clipboard { provider: Box::new(provider), primary })
     }
 
     pub fn get(&mut self) -> Option<String> {
@@ -23,5 +29,17 @@ impl Clipboard {
 
     pub fn set(&mut self, text: String) {
         let _ = self.provider.set_contents(text);
+    }
+
+    /// The text of the primary selection, if any.
+    pub fn get_primary(&mut self) -> Option<String> {
+        self.primary.as_mut()?.get_contents().ok()
+    }
+
+    /// Make `text` the primary selection.
+    pub fn set_primary(&mut self, text: String) {
+        if let Some(primary) = self.primary.as_mut() {
+            let _ = primary.set_contents(text);
+        }
     }
 }

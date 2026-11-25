@@ -68,6 +68,12 @@ pub struct Overlay {
     /// Cursor position on the view, if it should be drawn.
     pub cursor: Option<(usize, usize)>,
     pub cursor_style: CursorStyle,
+    /// Underline and beam thickness as a fraction of the cell.
+    pub cursor_thickness: f32,
+    /// Whether the window has keyboard focus.
+    pub focused: bool,
+    /// Draw a block cursor as an outline while the window is unfocused.
+    pub unfocused_hollow: bool,
 }
 
 /// A glyph in the atlas. Zero-sized glyphs (such as spaces) have no texture area.
@@ -275,12 +281,28 @@ impl Renderer {
                     push_quad(&mut self.vertices, px, py + ch / 2.0, cw, 1.0, [0.0; 4], rgba(fg, 1.0), MODE_SOLID);
                 }
                 if overlay.cursor == Some((x, y)) {
-                    let (x0, y0, w, h) = match overlay.cursor_style {
-                        CursorStyle::Block => (px, py, cw, ch),
-                        CursorStyle::Underline => (px, py + ch - 2.0, cw, 2.0),
-                        CursorStyle::Beam => (px, py, 2.0, ch),
-                    };
-                    push_quad(&mut self.vertices, x0, y0, w, h, [0.0; 4], CURSOR_COLOR, MODE_SOLID);
+                    let hollow = !overlay.focused && overlay.unfocused_hollow && overlay.cursor_style == CursorStyle::Block;
+                    if hollow {
+                        // A one-pixel outline around the cell.
+                        let edges = [
+                            (px, py, cw, 1.0),
+                            (px, py + ch - 1.0, cw, 1.0),
+                            (px, py, 1.0, ch),
+                            (px + cw - 1.0, py, 1.0, ch),
+                        ];
+                        for (x0, y0, w, h) in edges {
+                            push_quad(&mut self.vertices, x0, y0, w, h, [0.0; 4], CURSOR_COLOR, MODE_SOLID);
+                        }
+                    } else {
+                        let thick_h = (ch * overlay.cursor_thickness).max(1.0);
+                        let thick_w = (cw * overlay.cursor_thickness).max(1.0);
+                        let (x0, y0, w, h) = match overlay.cursor_style {
+                            CursorStyle::Block => (px, py, cw, ch),
+                            CursorStyle::Underline => (px, py + ch - thick_h, cw, thick_h),
+                            CursorStyle::Beam => (px, py, thick_w, ch),
+                        };
+                        push_quad(&mut self.vertices, x0, y0, w, h, [0.0; 4], CURSOR_COLOR, MODE_SOLID);
+                    }
                 }
             }
         }
@@ -480,7 +502,7 @@ fn resolve(color: Color, default: Rgb, bold: bool, colors: &Colors) -> Rgb {
     }
 }
 
-/// The 256-colour palette: the configured 16 ANSI colours, then the xterm colour cube and greys.
+/// The 256-colour palette: the configured 16 ANSI colours, then the standard colour cube and greys.
 fn palette(n: u8, colors: &Colors) -> Rgb {
     match n {
         0..=7 => colors.normal[n as usize],

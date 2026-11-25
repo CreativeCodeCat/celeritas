@@ -117,6 +117,8 @@ pub struct Screen {
     bracketed_paste: bool,
     /// Mode 1004: the window reports focus gained and lost with `ESC [I` and `ESC [O`.
     focus_reporting: bool,
+    /// Characters that end a word for double-click selection.
+    word_separators: Vec<char>,
 }
 
 impl Screen {
@@ -146,6 +148,7 @@ impl Screen {
             cursor_visible: true,
             bracketed_paste: false,
             focus_reporting: false,
+            word_separators: Vec::new(),
         }
     }
 
@@ -327,22 +330,25 @@ impl Screen {
         lines.join("\n")
     }
 
-    /// The span of the word at a logical position: a run of letters and digits, a run of
-    /// spaces, or a run of other characters. Returned as inclusive (row, column) bounds.
+    /// Set the characters that end a word when double-clicking (`selection.semantic_escape_chars`).
+    /// Spaces always end a word.
+    pub fn set_word_separators(&mut self, chars: &str) {
+        self.word_separators = chars.chars().collect();
+    }
+
+    /// The span of the word at a logical position. A word is a run of characters that are
+    /// not separators; a run of separators is selected as one unit. Returned as inclusive
+    /// (row, column) bounds.
     pub fn word_bounds(&self, row: usize, col: usize) -> ((usize, usize), (usize, usize)) {
-        // Wide characters' second column counts as part of the character before it.
-        let class = |c: char| match c {
-            ' ' => 0,
-            c if c.is_alphanumeric() || c == '_' || c == '\0' => 1,
-            _ => 2,
-        };
-        let target = class(self.cell_at(row, col).ch);
+        let is_separator = |c: char| c == ' ' || self.word_separators.contains(&c);
+        let target = is_separator(self.cell_at(row, col).ch);
+        let class = |c: char| is_separator(c) == target;
         let mut start = col;
-        while start > 0 && class(self.cell_at(row, start - 1).ch) == target {
+        while start > 0 && class(self.cell_at(row, start - 1).ch) {
             start -= 1;
         }
         let mut end = col;
-        while end + 1 < self.cols && class(self.cell_at(row, end + 1).ch) == target {
+        while end + 1 < self.cols && class(self.cell_at(row, end + 1).ch) {
             end += 1;
         }
         ((row, start), (row, end))
@@ -927,6 +933,22 @@ mod tests {
         let mut w = Screen::new(3, 2);
         feed(&mut w, b"abcdef\r\nxy");
         assert_eq!(w.line_bounds(0), ((0, 0), (1, 2)));
+    }
+
+    #[test]
+    fn word_separators_end_words() {
+        let mut s = Screen::new(12, 1);
+        feed(&mut s, b"a-b(c) d");
+        // Without separators, "a-b(c)" is one word (up to the space).
+        assert_eq!(s.word_bounds(0, 1), ((0, 0), (0, 5)));
+        s.set_word_separators("-()");
+        assert_eq!(s.word_bounds(0, 1), ((0, 1), (0, 1))); // the '-' itself
+        assert_eq!(s.word_bounds(0, 2), ((0, 2), (0, 2)));
+        assert_eq!(s.word_bounds(0, 3), ((0, 3), (0, 3)));
+        assert_eq!(s.word_bounds(0, 4), ((0, 4), (0, 4)));
+        // A run of separators, including the space after ')', is selected as one unit.
+        assert_eq!(s.word_bounds(0, 5), ((0, 5), (0, 6)));
+        assert_eq!(s.word_bounds(0, 7), ((0, 7), (0, 7)));
     }
 
     #[test]

@@ -9,7 +9,7 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 - Scrollback history (mouse wheel, or Shift+PageUp/PageDown) and a separate alternate screen for full-screen programs
 - Mouse selection, copied with Ctrl+Shift+C; double-click selects a word, triple-click a line, Alt+drag selects a rectangle
 - Scroll regions (`CSI r`), insert and delete line, and reverse index
-- Mouse reporting for programs (vim, tmux): the 1000, 1002 and 1003 modes, with legacy, UTF-8 (1005), SGR (1006) or URXVT (1015) encoding. Hold Shift to select text instead
+- Mouse reporting for programs (vim, less): the 1000, 1002 and 1003 modes, with legacy, UTF-8 (1005), SGR (1006) or URXVT (1015) encoding. Hold Shift to select text instead
 - Combining marks (accents, up to two per character) drawn over their base character
 - Wide characters (CJK and most emoji) take two columns
 - Answers the terminal queries shells send at startup (for example, fish's device-attributes probe)
@@ -42,8 +42,8 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 
 Close the window to quit.
 
-Command-line options override the configuration file. They use the same spelling as
-Alacritty, so window-manager rules written for it work unchanged:
+Command-line options override the configuration file. The option names are kept stable,
+so window-manager rules that match on the window class or title keep working:
 
     celeritas --title=NAME                  # window title
     celeritas --class=INSTANCE,GENERAL      # window class (X11) / app id (Wayland)
@@ -58,7 +58,7 @@ Alacritty, so window-manager rules written for it work unchanged:
 
 ## Configuration
 
-Settings are read from `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME/celeritas/celeritas.lua`). If the file doesn't exist, celeritas creates it with the default settings on first launch. The file is Lua and returns a table laid out like Alacritty's config. Anything you leave out uses the built-in default. A broken file prints an error and falls back to the defaults.
+Settings are read from `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME/celeritas/celeritas.lua`). If the file doesn't exist, celeritas creates it with the default settings on first launch. The file is Lua and returns a table of settings grouped into sections (`window`, `font`, `colors`, and so on). Anything you leave out uses the built-in default. A broken file prints an error and falls back to the defaults.
 
 Supported settings:
 
@@ -68,7 +68,11 @@ Supported settings:
 - `shell`: the shell to run (default `$SHELL`)
 - `window`: `title`, `decorations`, `opacity` (0.0 to 1.0; only the default background becomes see-through), `class` (`instance` and `general`, the names window-manager rules match), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
 - `mouse.hide_when_typing`: hide the mouse pointer while typing, and show it again when the mouse moves
+- `mouse.bindings`: the middle button, as `{ mouse = "Middle", action = ... }` with action `PasteSelection` (the default), `Paste` or `None`. Selecting text by dragging sets the primary selection
 - `selection.save_to_clipboard`: copy a selection to the clipboard as soon as it is dragged out
+- `selection.semantic_escape_chars`: characters that end a word for double-click selection (by default, common punctuation and brackets, plus space and tab)
+- `cursor.thickness`: the underline and beam thickness as a fraction of the cell (default 0.15)
+- `cursor.unfocused_hollow`: draw a block cursor as an outline while the window is unfocused (default true)
 - `cursor.style`: `"Block"`, `"Underline"` or `"Beam"`
 - `keyboard.bindings`: a list of `{ key, mods, action }` or `{ key, mods, chars }` entries. Actions are Copy, Paste, ScrollPageUp, ScrollPageDown, ScrollLineUp, ScrollLineDown, ScrollToTop, ScrollToBottom and None (swallow the key). `chars` sends the given text. Later entries take precedence over the built-in keys
 - `font.size`
@@ -81,10 +85,10 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 
 ## Limitations
 
-This is a learning-sized emulator, not a replacement for kitty or alacritty:
+This is a learning-sized emulator, not a full-featured terminal:
 
 - Italic text is slanted in software when no italic face is installed. Install an italic version of your font and set `font.italic` to use it
-- These Alacritty options are not supported yet and are ignored: `cursor.unfocused_hollow`, `cursor.thickness`, `cursor.vi_mode_style`, `selection.semantic_escape_chars`, `window.dynamic_padding`, `window.decorations_theme_variant`, `general.live_config_reload`, and `mouse.bindings` (so middle-click paste does not work yet)
+- These options are not supported yet and are ignored: `cursor.vi_mode_style`, `window.dynamic_padding`, `window.decorations_theme_variant` and `general.live_config_reload`
 - Other terminal modes are accepted and ignored. Mouse tracking (1000, 1002, 1003) and encodings (1005, 1006, 1015), focus reporting (1004), bracketed paste (2004), application cursor keys (1) and cursor visibility (25) are supported
 
 ## License

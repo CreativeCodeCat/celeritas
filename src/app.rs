@@ -24,7 +24,7 @@ use winit::platform::x11::WindowAttributesExtX11;
 use winit::window::{Window, WindowAttributes};
 
 use crate::clipboard::Clipboard;
-use crate::config::{BindingAction, Config};
+use crate::config::{BindingAction, Config, MiddleClick};
 use crate::font::FontSet;
 use crate::input::{application_cursor_bytes, key_bytes, key_name, Mods};
 use crate::pty::{Pty, PtyMsg};
@@ -105,6 +105,8 @@ pub struct App {
     last_frame: Option<Instant>,
     /// A redraw came too soon after the last frame; it runs once the next frame is due.
     redraw_deferred: bool,
+    /// Whether the window has keyboard focus.
+    focused: bool,
     /// The shell has more output waiting than one pump could read.
     pty_busy: bool,
 }
@@ -113,6 +115,7 @@ impl App {
     pub fn new(config: Config, pty: Pty, screenshot: Option<PathBuf>) -> App {
         let mut screen = Screen::new(config.columns, config.lines);
         screen.set_history_limit(config.scrollback);
+        screen.set_word_separators(&config.semantic_escape_chars);
         App {
             config,
             pty,
@@ -131,6 +134,7 @@ impl App {
             frames: 0,
             last_frame: None,
             redraw_deferred: false,
+            focused: true,
             pty_busy: false,
         }
     }
@@ -237,6 +241,9 @@ impl App {
             selection_block: self.selection.is_some_and(|s| s.block),
             cursor: (self.screen.at_bottom() && self.screen.cursor_visible()).then(|| self.screen.cursor()),
             cursor_style: self.config.cursor_style,
+            cursor_thickness: self.config.cursor_thickness,
+            focused: self.focused,
+            unfocused_hollow: self.config.cursor_unfocused_hollow,
         };
         gfx.renderer.draw(&self.screen, &self.config.colors, &overlay);
 
@@ -385,18 +392,26 @@ impl App {
         }
     }
 
-    fn copy_selection(&mut self) {
+    /// The text under the current selection, or nothing if there is none.
+    fn selected_text(&self) -> String {
         let Some((start, end)) = self.selection.and_then(|s| s.range()) else {
+            return String::new();
+        };
+        if self.selection.is_some_and(|s| s.block) {
+            self.screen.block_text(start, end)
+        } else {
+            self.screen.text_between(start, end)
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        if self.selection.and_then(|s| s.range()).is_none() {
             if debug_enabled() {
                 eprintln!("celeritas: copy with no selection");
             }
             return;
-        };
-        let text = if self.selection.is_some_and(|s| s.block) {
-            self.screen.block_text(start, end)
-        } else {
-            self.screen.text_between(start, end)
-        };
+        }
+        let text = self.selected_text();
         if debug_enabled() {
             eprintln!("celeritas: copy {} chars, clipboard {}", text.len(), self.clipboard.is_some());
         }
@@ -410,9 +425,25 @@ impl App {
         if debug_enabled() {
             eprintln!("celeritas: paste {:?} chars", text.as_ref().map(|t| t.len()));
         }
-        let Some(text) = text else {
-            return;
+        if let Some(text) = text {
+            self.paste_text(text);
+        }
+    }
+
+    /// The middle mouse button, as `mouse.bindings` sets it.
+    fn middle_click(&mut self) {
+        let text = match self.config.middle_click {
+            MiddleClick::None => return,
+            MiddleClick::PasteSelection => self.clipboard.as_mut().and_then(|c| c.get_primary()),
+            MiddleClick::Paste => self.clipboard.as_mut().and_then(|c| c.get()),
         };
+        if let Some(text) = text {
+            self.paste_text(text);
+        }
+    }
+
+    /// Send pasted text to the shell.
+    fn paste_text(&mut self, text: String) {
         // The shell expects carriage returns for new lines, as the Enter key sends.
         self.screen.reset_view();
         let body = text.replace('\n', "\r");
@@ -604,6 +635,8 @@ impl ApplicationHandler<()> for App {
                 self.mods = Mods { shift: state.shift_key(), ctrl: state.control_key(), alt: state.alt_key() };
             }
             WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                self.request_redraw();
                 if self.screen.focus_reporting() {
                     self.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
                 }
@@ -636,15 +669,24 @@ impl ApplicationHandler<()> for App {
                         self.last_report = None;
                         self.report_mouse(code, col, row, !pressed);
                     }
+                } else if button == MouseButton::Middle && state == ElementState::Pressed {
+                    self.middle_click();
                 } else if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => self.left_press(),
                         ElementState::Released => {
                             self.selecting = false;
-                            // Only a drag over more than one cell counts as a selection to save.
+                            // Only a drag over more than one cell counts as a selection.
                             let dragged = self.selection.and_then(|s| s.range()).is_some_and(|(a, b)| a != b);
-                            if self.config.save_selection_to_clipboard && dragged {
-                                self.copy_selection();
+                            if dragged {
+                                // The primary selection follows the mouse selection.
+                                let text = self.selected_text();
+                                if let Some(clipboard) = self.clipboard.as_mut() {
+                                    clipboard.set_primary(text);
+                                }
+                                if self.config.save_selection_to_clipboard {
+                                    self.copy_selection();
+                                }
                             }
                         }
                     }
