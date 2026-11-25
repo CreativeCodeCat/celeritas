@@ -30,6 +30,11 @@ use crate::renderer::{Overlay, Renderer};
 use crate::screen::MouseEncoding;
 use crate::screen::Screen;
 
+/// Set `CELERITAS_DEBUG=1` to trace key presses, selection and clipboard use on stderr.
+fn debug_enabled() -> bool {
+    std::env::var_os("CELERITAS_DEBUG").is_some()
+}
+
 /// Lines moved per mouse-wheel notch.
 const WHEEL_LINES: f32 = 3.0;
 /// With `CELERITAS_SCREENSHOT` set, the window saves its first frame after this many redraws.
@@ -278,6 +283,9 @@ impl App {
     }
 
     fn key_press(&mut self, key: &Key, text: Option<&str>) {
+        if debug_enabled() {
+            eprintln!("celeritas: key {key:?} mods {:?} clipboard {}", self.mods, self.clipboard.is_some());
+        }
         // Configured bindings come first, so they can replace the built-in keys.
         if let Some(action) = self.binding_for(key) {
             self.run_action(action);
@@ -318,6 +326,9 @@ impl App {
 
     fn copy_selection(&mut self) {
         let Some((start, end)) = self.selection.and_then(|s| s.range()) else {
+            if debug_enabled() {
+                eprintln!("celeritas: copy with no selection");
+            }
             return;
         };
         let text = if self.selection.is_some_and(|s| s.block) {
@@ -325,13 +336,20 @@ impl App {
         } else {
             self.screen.text_between(start, end)
         };
+        if debug_enabled() {
+            eprintln!("celeritas: copy {} chars, clipboard {}", text.len(), self.clipboard.is_some());
+        }
         if let (false, Some(clipboard)) = (text.is_empty(), self.clipboard.as_mut()) {
             clipboard.set(text);
         }
     }
 
     fn paste(&mut self) {
-        let Some(text) = self.clipboard.as_mut().and_then(|c| c.get()) else {
+        let text = self.clipboard.as_mut().and_then(|c| c.get());
+        if debug_enabled() {
+            eprintln!("celeritas: paste {:?} chars", text.as_ref().map(|t| t.len()));
+        }
+        let Some(text) = text else {
             return;
         };
         // The shell expects carriage returns for new lines, as the Enter key sends.
