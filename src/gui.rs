@@ -1,15 +1,39 @@
-//! The window: draws the `Screen` grid with egui and forwards keyboard input to the PTY.
+//! The window: draws the `Screen` grid with egui and forwards keyboard and mouse input to the PTY.
 
 use std::io::Write;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, Color32, FontId, Key, Modifiers, Sense, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Key, Modifiers, Pos2, Response, Sense, Stroke, Vec2};
 use portable_pty::{Child, MasterPty, PtySize};
 
 use crate::config::{Colors, Config, Rgb};
 use crate::screen::{Color, Screen};
 use crate::PtyMsg;
+
+/// Lines scrolled per mouse-wheel notch.
+const WHEEL_LINES: isize = 3;
+const SELECTION_BG: Color32 = Color32::from_rgba_premultiplied(0x2a, 0x63, 0x9d, 0x90);
+
+/// A mouse selection in logical screen coordinates: (row, column) pairs.
+#[derive(Clone, Copy, PartialEq)]
+struct Selection {
+    anchor: (usize, usize),
+    head: (usize, usize),
+}
+
+impl Selection {
+    /// The selected range, ordered, or `None` if nothing is selected.
+    fn range(&self) -> Option<((usize, usize), (usize, usize))> {
+        if self.anchor == self.head {
+            None
+        } else if self.anchor < self.head {
+            Some((self.anchor, self.head))
+        } else {
+            Some((self.head, self.anchor))
+        }
+    }
+}
 
 /// One terminal window: owns the shell process and the screen it writes into.
 pub struct Terminal {
@@ -23,6 +47,7 @@ pub struct Terminal {
     shell_exited: bool,
     /// Whether the window has been sized to the configured columns and lines yet.
     sized: bool,
+    selection: Option<Selection>,
 }
 
 impl Terminal {
@@ -33,8 +58,10 @@ impl Terminal {
         writer: Box<dyn Write + Send>,
         child: Box<dyn Child + Send + Sync>,
     ) -> Self {
+        let mut screen = Screen::new(config.columns, config.lines);
+        screen.set_history_limit(config.scrollback);
         Terminal {
-            screen: Screen::new(config.columns, config.lines),
+            screen,
             config,
             parser: vte::Parser::new(),
             rx,
@@ -43,13 +70,21 @@ impl Terminal {
             child,
             shell_exited: false,
             sized: false,
+            selection: None,
         }
     }
 
+    /// Write raw bytes to the shell, bypassing the scrollback view.
     fn send(&mut self, bytes: &[u8]) {
         if self.writer.write_all(bytes).and_then(|_| self.writer.flush()).is_err() {
             self.shell_exited = true;
         }
+    }
+
+    /// Send what the user typed. Typing returns the view to the live screen.
+    fn send_input(&mut self, bytes: &[u8]) {
+        self.screen.reset_view();
+        self.send(bytes);
     }
 
     /// Feed everything the shell has written since the last frame into the screen.
@@ -75,16 +110,44 @@ impl Terminal {
         }
     }
 
-    /// Forward this frame's keyboard and clipboard input to the shell.
+    fn copy_selection(&self, ctx: &egui::Context) {
+        if let Some((start, end)) = self.selection.and_then(|s| s.range()) {
+            let text = self.screen.text_between(start, end);
+            if !text.is_empty() {
+                ctx.copy_text(text);
+            }
+        }
+    }
+
+    /// Handle this frame's keyboard, mouse-wheel and clipboard input.
     fn handle_input(&mut self, ctx: &egui::Context) {
-        let events = ctx.input(|i| i.events.clone());
+        let (events, modifiers) = ctx.input(|i| (i.events.clone(), i.modifiers));
         for event in events {
             let bytes = match event {
                 egui::Event::Text(text) | egui::Event::Paste(text) => text.into_bytes(),
-                // No text selection yet, so copy/cut act as the usual terminal control keys.
+                egui::Event::Copy if modifiers.shift => {
+                    self.copy_selection(ctx);
+                    continue;
+                }
                 egui::Event::Copy => vec![0x03], // Ctrl-C (interrupt)
                 egui::Event::Cut => vec![0x18],  // Ctrl-X
+                egui::Event::MouseWheel { delta, .. } => {
+                    if delta.y != 0.0 {
+                        self.screen.scroll_view(if delta.y > 0.0 { WHEEL_LINES } else { -WHEEL_LINES });
+                    }
+                    continue;
+                }
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    if modifiers.shift && (key == Key::PageUp || key == Key::PageDown) && !self.screen.in_alt_screen() {
+                        // Shift+PageUp/PageDown page through the scrollback.
+                        let page = self.screen.rows.saturating_sub(1).max(1) as isize;
+                        self.screen.scroll_view(if key == Key::PageUp { page } else { -page });
+                        continue;
+                    }
+                    if modifiers.ctrl && modifiers.shift && key == Key::C {
+                        self.copy_selection(ctx);
+                        continue;
+                    }
                     match key_bytes(key, modifiers) {
                         Some(bytes) => bytes,
                         None => continue,
@@ -92,12 +155,12 @@ impl Terminal {
                 }
                 _ => continue,
             };
-            self.send(&bytes);
+            self.send_input(&bytes);
         }
     }
 
     /// Lay out the grid to fill the window, resizing the screen and PTY when it changes.
-    fn layout_grid(&mut self, ui: &mut egui::Ui) -> (egui::Response, egui::Painter, Vec2, usize, usize) {
+    fn layout_grid(&mut self, ui: &mut egui::Ui) -> (Response, egui::Painter, Vec2, usize, usize) {
         let font = FontId::monospace(self.config.font_size);
         let fg = rgb(self.config.colors.foreground);
         let cell = ui.painter().layout_no_wrap("M".to_string(), font, fg).size();
@@ -122,18 +185,42 @@ impl Terminal {
             });
         }
 
-        let (response, painter) =
-            ui.allocate_painter(Vec2::new(cols as f32 * cell.x, rows as f32 * cell.y), Sense::hover());
+        let (response, painter) = ui.allocate_painter(
+            Vec2::new(cols as f32 * cell.x, rows as f32 * cell.y),
+            Sense::click_and_drag(),
+        );
         (response, painter, cell, cols, rows)
     }
 
-    fn paint_grid(&self, painter: &egui::Painter, origin: egui::Pos2, cell: Vec2, cols: usize, rows: usize) {
+    /// Start, extend or clear a mouse selection from this frame's pointer state.
+    fn handle_pointer(&mut self, ui: &egui::Ui, response: &Response, origin: Pos2, cell: Vec2, cols: usize, rows: usize) {
+        let pos = response.interact_pointer_pos();
+        let top = self.screen.first_visible_row();
+        let at = |p: Pos2| logical_at(p, origin, cell, cols, rows, top);
+
+        if response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+            if let Some(p) = pos {
+                let start = at(p);
+                self.selection = Some(Selection { anchor: start, head: start });
+            }
+        } else if response.dragged() {
+            if let (Some(p), Some(sel)) = (pos, self.selection.as_mut()) {
+                sel.head = at(p);
+            }
+        }
+    }
+
+    fn paint_grid(&self, painter: &egui::Painter, origin: Pos2, cell: Vec2, cols: usize, rows: usize) {
         let colors = &self.config.colors;
         let font = FontId::monospace(self.config.font_size);
+        let top = self.screen.first_visible_row();
         let (cur_x, cur_y) = self.screen.cursor();
+        let show_cursor = self.screen.at_bottom();
+        let selected = self.selection.and_then(|s| s.range());
+
         for y in 0..rows {
             for x in 0..cols {
-                let c = self.screen.cell(x, y);
+                let c = self.screen.visible_cell(x, y);
                 let mut fg = resolve(c.fg, colors.foreground, c.bold, colors);
                 let mut bg = resolve(c.bg, colors.background, false, colors);
                 if c.reverse {
@@ -144,10 +231,24 @@ impl Terminal {
                 if bg != rgb(colors.background) {
                     painter.rect_filled(rect, 0.0, bg);
                 }
-                if c.ch != ' ' {
+                if let Some((start, end)) = selected {
+                    if (top + y, x) >= start && (top + y, x) <= end {
+                        painter.rect_filled(rect, 0.0, SELECTION_BG);
+                    }
+                }
+                // '\0' is the right half of a wide character; its glyph is drawn by the left half.
+                if c.ch != ' ' && c.ch != '\0' {
                     painter.text(pos, Align2::LEFT_TOP, c.ch, font.clone(), fg);
                 }
-                if (x, y) == (cur_x, cur_y) {
+                if c.underline {
+                    let y_line = rect.bottom() - 1.0;
+                    painter.line_segment([Pos2::new(rect.left(), y_line), Pos2::new(rect.right(), y_line)], Stroke::new(1.0, fg));
+                }
+                if c.strikethrough {
+                    let y_line = rect.center().y;
+                    painter.line_segment([Pos2::new(rect.left(), y_line), Pos2::new(rect.right(), y_line)], Stroke::new(1.0, fg));
+                }
+                if show_cursor && (x, y) == (cur_x, cur_y) {
                     painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0xdd, 0xdd, 0xdd, 0x90));
                 }
             }
@@ -169,7 +270,9 @@ impl eframe::App for Terminal {
             .frame(egui::Frame::NONE.fill(rgb(self.config.colors.background)))
             .show(ui, |ui| {
                 let (response, painter, cell, cols, rows) = self.layout_grid(ui);
-                self.paint_grid(&painter, response.rect.min, cell, cols, rows);
+                let origin = response.rect.min;
+                self.handle_pointer(ui, &response, origin, cell, cols, rows);
+                self.paint_grid(&painter, origin, cell, cols, rows);
             });
 
         // Shell output arrives on another thread, so keep polling for it.
@@ -182,6 +285,13 @@ impl Drop for Terminal {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The logical (row, column) under a pointer position, clamped to the grid.
+fn logical_at(p: Pos2, origin: Pos2, cell: Vec2, cols: usize, rows: usize, top: usize) -> (usize, usize) {
+    let col = ((p.x - origin.x) / cell.x).max(0.0) as usize;
+    let row = ((p.y - origin.y) / cell.y).max(0.0) as usize;
+    (top + row.min(rows - 1), col.min(cols - 1))
 }
 
 /// Translate a key press into the bytes a terminal program expects.

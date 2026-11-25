@@ -5,9 +5,12 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 ## Features
 
 - Runs your `$SHELL` in a pseudo-terminal (PTY) and draws its output in a window
-- Handles the common ANSI/VT escape codes: cursor movement, erase, 16 and 256 colours, truecolour, and the alternate screen
+- Handles the common ANSI/VT escape codes: cursor movement, erase, 16 and 256 colours, truecolour, underline and strikethrough
+- Scrollback history (mouse wheel, or Shift+PageUp/PageDown) and a separate alternate screen for full-screen programs
+- Mouse selection, copied with Ctrl+Shift+C
+- Wide characters (CJK and most emoji) take two columns
 - Answers the terminal queries shells send at startup (for example, fish's device-attributes probe)
-- Clipboard paste with Ctrl-V; Ctrl-C is sent to the shell as an interrupt
+- Paste with Ctrl-V; Ctrl-C is sent to the shell as an interrupt
 - Configured with a Lua file: window size and title, font size, colours, shell, working directory and environment variables
 
 ## How it works
@@ -46,6 +49,7 @@ Settings are read from `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME
 Supported settings:
 
 - `env`: extra environment variables for the shell
+- `scrolling.history`: lines of scrollback kept (default 10000; 0 turns it off)
 - `shell`: the shell to run (default `$SHELL`)
 - `window`: `title`, `decorations`, and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
 - `font.size`
@@ -60,12 +64,11 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 
 This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
-- No scrollback, scroll regions, mouse support, or text selection
+- No scroll regions, and no mouse reporting to programs (the mouse only scrolls and selects)
+- Selection is by character cells only (no word or line selection); wrapped lines are copied with a newline
 - Bold text is drawn in the bright colours, not with a bold font
 - Fonts come from egui's built-in set, so some symbol glyphs (such as Nerd Font icons) show as boxes
-- Wide (CJK and emoji) characters take one column
-- The alternate screen is simulated by clearing the grid, not kept as a separate buffer
-- Only the common SGR colour and style codes are supported
+- Italic and dim text are not drawn differently; combining marks are dropped
 - Unsupported Alacritty options (key bindings, cursor style, opacity, font families) are ignored
 
 ## License

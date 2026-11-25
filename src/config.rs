@@ -45,6 +45,8 @@ pub struct Config {
     pub working_directory: Option<PathBuf>,
     /// Extra environment variables for the shell.
     pub env: Vec<(String, String)>,
+    /// Lines of scrollback kept above the screen. 0 turns scrollback off.
+    pub scrollback: usize,
 }
 
 impl Default for Config {
@@ -83,6 +85,7 @@ impl Default for Config {
             shell: None,
             working_directory: None,
             env: Vec::new(),
+            scrollback: crate::screen::DEFAULT_HISTORY,
         }
     }
 }
@@ -172,6 +175,12 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
         apply_colors(&colors, &mut config.colors)?;
     }
 
+    if let Some(scrolling) = root.get::<Option<Table>>("scrolling")? {
+        if let Some(history) = scrolling.get::<Option<usize>>("history")? {
+            config.scrollback = history;
+        }
+    }
+
     if let Some(general) = root.get::<Option<Table>>("general")? {
         if let Some(dir) = general.get::<Option<String>>("working_directory")? {
             config.working_directory = Some(PathBuf::from(dir));
@@ -246,6 +255,7 @@ mod tests {
               general = { working_directory = "/tmp" },
               window = { title = "mine", decorations = false, dimensions = { columns = 100, lines = 30 } },
               font = { size = 10 },
+              scrolling = { history = 500 },
               colors = {
                 primary = { background = nord.bg, foreground = "#D8DEE9" },
                 normal = { red = "0xBF616A" },
@@ -257,6 +267,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.title, "mine");
+        assert_eq!(config.scrollback, 500);
         assert!(!config.decorations);
         assert_eq!((config.columns, config.lines), (100, 30));
         assert_eq!(config.font_size, 10.0);

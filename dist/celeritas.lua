@@ -24,6 +24,11 @@ return {
     size = 14,
   },
 
+  scrolling = {
+    -- Lines of scrollback kept above the screen (0 turns it off).
+    history = 10000,
+  },
+
   colors = {
     primary = {
       background = "0x1E1E1E",

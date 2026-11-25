@@ -1,5 +1,12 @@
 //! The virtual screen: a grid of cells plus the cursor, updated by the VT parser.
+//!
+//! Rows that scroll off the top of the main screen are kept as scrollback history.
+//! The alternate screen (used by vim, less, ...) is a separate grid that is discarded
+//! when the program leaves it, and the main screen is restored.
 
+use std::collections::VecDeque;
+
+use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
 /// A colour as the program asked for it; the GUI maps it to real pixels.
@@ -14,17 +21,38 @@ pub enum Color {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Cell {
+    /// The character shown. `'\0'` marks the second column of a wide character.
     pub ch: char,
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
     pub reverse: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { ch: ' ', fg: Color::Default, bg: Color::Default, bold: false, reverse: false }
+        Cell {
+            ch: ' ',
+            fg: Color::Default,
+            bg: Color::Default,
+            bold: false,
+            reverse: false,
+            underline: false,
+            strikethrough: false,
+        }
     }
+}
+
+/// Scrollback rows kept when the config does not say otherwise.
+pub const DEFAULT_HISTORY: usize = 10_000;
+
+/// The main screen, saved while the alternate screen is active.
+struct SavedMain {
+    cells: Vec<Cell>,
+    cx: usize,
+    cy: usize,
 }
 
 pub struct Screen {
@@ -41,6 +69,13 @@ pub struct Screen {
     /// Bytes the terminal must send back to the shell (answers to queries such as
     /// device attributes and cursor position). Drained by the event loop.
     replies: Vec<u8>,
+    /// Rows that scrolled off the top of the main screen, oldest first.
+    history: VecDeque<Vec<Cell>>,
+    history_limit: usize,
+    /// How many history rows the view is scrolled up by (0 = showing the live screen).
+    view_offset: usize,
+    /// The main screen while the alternate screen is active.
+    alt_saved: Option<SavedMain>,
 }
 
 impl Screen {
@@ -56,6 +91,10 @@ impl Screen {
             wrap_pending: false,
             pen: Cell::default(),
             replies: Vec::new(),
+            history: VecDeque::new(),
+            history_limit: DEFAULT_HISTORY,
+            view_offset: 0,
+            alt_saved: None,
         }
     }
 
@@ -64,25 +103,97 @@ impl Screen {
         std::mem::take(&mut self.replies)
     }
 
-    /// The cell at column `x`, row `y`.
-    pub fn cell(&self, x: usize, y: usize) -> Cell {
-        self.cells[y * self.cols + x]
-    }
-
-    /// Cursor position as (column, row).
+    /// Cursor position as (column, row) on the live screen.
     pub fn cursor(&self) -> (usize, usize) {
         (self.cx, self.cy)
     }
 
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        let (cols, rows) = (cols.max(1), rows.max(1));
-        let mut new = vec![Cell::default(); cols * rows];
-        for y in 0..rows.min(self.rows) {
-            for x in 0..cols.min(self.cols) {
-                new[y * cols + x] = self.cells[y * self.cols + x];
+    /// Set how many scrollback rows to keep. 0 disables scrollback.
+    pub fn set_history_limit(&mut self, limit: usize) {
+        self.history_limit = limit;
+        while self.history.len() > limit {
+            self.history.pop_front();
+        }
+        self.view_offset = self.view_offset.min(self.history.len());
+    }
+
+    pub fn in_alt_screen(&self) -> bool {
+        self.alt_saved.is_some()
+    }
+
+    /// Scroll the view up (positive) or down (negative) through the history.
+    /// Has no effect on the alternate screen.
+    pub fn scroll_view(&mut self, lines: isize) {
+        if self.in_alt_screen() {
+            return;
+        }
+        let next = self.view_offset as isize + lines;
+        self.view_offset = next.clamp(0, self.history.len() as isize) as usize;
+    }
+
+    /// Jump back to the live screen.
+    pub fn reset_view(&mut self) {
+        self.view_offset = 0;
+    }
+
+    /// Whether the view shows the live screen (not scrolled back).
+    pub fn at_bottom(&self) -> bool {
+        self.view_offset == 0
+    }
+
+    /// The logical row shown at the top of the view. Logical rows count the history
+    /// first, then the live screen, so a selection stays put while the view scrolls.
+    pub fn first_visible_row(&self) -> usize {
+        self.history.len() - self.view_offset
+    }
+
+    /// The cell shown at column `x`, row `y` of the view.
+    pub fn visible_cell(&self, x: usize, y: usize) -> Cell {
+        self.cell_at(self.first_visible_row() + y, x)
+    }
+
+    /// The cell at a logical row and column.
+    pub fn cell_at(&self, row: usize, col: usize) -> Cell {
+        if row < self.history.len() {
+            self.history[row].get(col).copied().unwrap_or_default()
+        } else {
+            let y = row - self.history.len();
+            if y < self.rows && col < self.cols {
+                self.cells[y * self.cols + col]
+            } else {
+                Cell::default()
             }
         }
-        self.cells = new;
+    }
+
+    /// The plain text between two logical positions (inclusive), one line per row.
+    /// Trailing spaces on each line are dropped. The two positions may come in either order.
+    pub fn text_between(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let mut lines = Vec::new();
+        for row in start.0..=end.0 {
+            let first = if row == start.0 { start.1 } else { 0 };
+            let last = if row == end.0 { end.1 } else { self.cols.saturating_sub(1) };
+            let mut line = String::new();
+            for col in first..=last {
+                let c = self.cell_at(row, col);
+                if c.ch != '\0' {
+                    line.push(c.ch);
+                }
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        self.cells = reflow(&self.cells, self.cols, self.rows, cols, rows);
+        if let Some(saved) = self.alt_saved.as_mut() {
+            saved.cells = reflow(&saved.cells, self.cols, self.rows, cols, rows);
+            saved.cx = saved.cx.min(cols - 1);
+            saved.cy = saved.cy.min(rows - 1);
+        }
         self.cols = cols;
         self.rows = rows;
         self.cx = self.cx.min(cols - 1);
@@ -103,9 +214,22 @@ impl Screen {
     }
 
     fn scroll_up(&mut self) {
+        let top: Vec<Cell> = self.cells[..self.cols].to_vec();
         self.cells.drain(0..self.cols);
         let blank = self.blank();
         self.cells.extend(std::iter::repeat(blank).take(self.cols));
+
+        // The alternate screen has no scrollback.
+        if !self.in_alt_screen() && self.history_limit > 0 {
+            self.history.push_back(top);
+            if self.history.len() > self.history_limit {
+                self.history.pop_front();
+            }
+            // Keep a scrolled-back view showing the same text as new rows arrive.
+            if self.view_offset > 0 {
+                self.view_offset = (self.view_offset + 1).min(self.history.len());
+            }
+        }
     }
 
     fn newline(&mut self) {
@@ -117,17 +241,46 @@ impl Screen {
     }
 
     fn put_char(&mut self, ch: char) {
-        if self.wrap_pending {
+        // Wide characters (CJK, most emoji) take two columns; zero-width ones are dropped.
+        let width = match UnicodeWidthChar::width(ch) {
+            Some(0) | None => return,
+            Some(w) => w.min(self.cols).min(2),
+        };
+        if self.wrap_pending || self.cx + width > self.cols {
             self.cx = 0;
             self.newline();
             self.wrap_pending = false;
         }
         let idx = self.cy * self.cols + self.cx;
         self.cells[idx] = Cell { ch, ..self.pen };
-        if self.cx + 1 < self.cols {
-            self.cx += 1;
+        if width == 2 {
+            self.cells[idx + 1] = Cell { ch: '\0', ..self.pen };
+        }
+        let next = self.cx + width;
+        if next < self.cols {
+            self.cx = next;
         } else {
+            self.cx = self.cols - 1;
             self.wrap_pending = true;
+        }
+    }
+
+    fn enter_alt_screen(&mut self) {
+        if self.in_alt_screen() {
+            return;
+        }
+        let main = std::mem::replace(&mut self.cells, vec![Cell::default(); self.cols * self.rows]);
+        self.alt_saved = Some(SavedMain { cells: main, cx: self.cx, cy: self.cy });
+        self.cx = 0;
+        self.cy = 0;
+        self.view_offset = 0;
+    }
+
+    fn leave_alt_screen(&mut self) {
+        if let Some(saved) = self.alt_saved.take() {
+            self.cells = saved.cells;
+            self.cx = saved.cx;
+            self.cy = saved.cy;
         }
     }
 
@@ -144,8 +297,12 @@ impl Screen {
                 0 => self.pen = Cell::default(),
                 1 => self.pen.bold = true,
                 22 => self.pen.bold = false,
+                4 => self.pen.underline = true,
+                24 => self.pen.underline = false,
                 7 => self.pen.reverse = true,
                 27 => self.pen.reverse = false,
+                9 => self.pen.strikethrough = true,
+                29 => self.pen.strikethrough = false,
                 30..=37 => self.pen.fg = basic_color((v - 30) as u8, false),
                 39 => self.pen.fg = Color::Default,
                 40..=47 => self.pen.bg = basic_color((v - 40) as u8, false),
@@ -183,6 +340,17 @@ impl Screen {
             i += 1;
         }
     }
+}
+
+/// Copy a grid into a new size, keeping the cells that still fit.
+fn reflow(old: &[Cell], old_cols: usize, old_rows: usize, cols: usize, rows: usize) -> Vec<Cell> {
+    let mut new = vec![Cell::default(); cols * rows];
+    for y in 0..rows.min(old_rows) {
+        for x in 0..cols.min(old_cols) {
+            new[y * cols + x] = old[y * old_cols + x];
+        }
+    }
+    new
 }
 
 fn basic_color(n: u8, bright: bool) -> Color {
@@ -264,11 +432,10 @@ impl Perform for Screen {
                 _ => {}
             },
             'h' | 'l' if intermediates == [b'?'] && p.contains(&1049) => {
-                // Alternate screen (vim, less, ...): start clean. We don't keep a second buffer.
                 if action == 'h' {
-                    self.fill(0..self.cells.len());
-                    self.cx = 0;
-                    self.cy = 0;
+                    self.enter_alt_screen();
+                } else {
+                    self.leave_alt_screen();
                 }
             }
             _ => {} // other modes/sequences are accepted and ignored
@@ -297,7 +464,7 @@ mod tests {
     }
 
     fn row(s: &Screen, y: usize) -> String {
-        s.cells[y * s.cols..(y + 1) * s.cols].iter().map(|c| c.ch).collect()
+        (0..s.cols).map(|x| s.visible_cell(x, y).ch).collect()
     }
 
     #[test]
@@ -327,10 +494,10 @@ mod tests {
     fn colours_are_applied() {
         let mut s = Screen::new(4, 1);
         feed(&mut s, b"\x1b[31;1mR\x1b[0mN");
-        assert_eq!(s.cells[0].fg, Color::Indexed(1));
-        assert!(s.cells[0].bold);
-        assert_eq!(s.cells[1].fg, Color::Default);
-        assert!(!s.cells[1].bold);
+        assert_eq!(s.visible_cell(0, 0).fg, Color::Indexed(1));
+        assert!(s.visible_cell(0, 0).bold);
+        assert_eq!(s.visible_cell(1, 0).fg, Color::Default);
+        assert!(!s.visible_cell(1, 0).bold);
     }
 
     #[test]
@@ -352,5 +519,75 @@ mod tests {
         feed(&mut s, b"\x1b[5n");
         assert_eq!(s.take_replies(), b"\x1b[0n");
         assert!(s.take_replies().is_empty());
+    }
+
+    #[test]
+    fn scrollback_keeps_lines_and_can_be_viewed() {
+        let mut s = Screen::new(3, 2);
+        feed(&mut s, b"aa\r\nbb\r\ncc");
+        // "aa" scrolled off; the live screen shows bb / cc.
+        assert_eq!(s.history.len(), 1);
+        s.scroll_view(1);
+        assert_eq!(row(&s, 0), "aa ");
+        assert_eq!(row(&s, 1), "bb ");
+        s.scroll_view(10); // clamped at the top of history
+        assert_eq!(s.view_offset, 1);
+        s.reset_view();
+        assert_eq!(row(&s, 0), "bb ");
+    }
+
+    #[test]
+    fn history_limit_is_enforced() {
+        let mut s = Screen::new(3, 1);
+        s.set_history_limit(2);
+        feed(&mut s, b"a\nb\nc\nd\n");
+        assert_eq!(s.history.len(), 2);
+    }
+
+    #[test]
+    fn alternate_screen_is_separate_and_restored() {
+        let mut s = Screen::new(4, 2);
+        feed(&mut s, b"main");
+        feed(&mut s, b"\x1b[?1049h");
+        assert!(s.in_alt_screen());
+        assert_eq!(row(&s, 0), "    ");
+        feed(&mut s, b"vim!");
+        assert_eq!(row(&s, 0), "vim!");
+        feed(&mut s, b"\x1b[?1049l");
+        assert!(!s.in_alt_screen());
+        assert_eq!(row(&s, 0), "main");
+    }
+
+    #[test]
+    fn alternate_screen_has_no_scrollback() {
+        let mut s = Screen::new(3, 2);
+        feed(&mut s, b"\x1b[?1049haa\r\nbb\r\ncc");
+        assert_eq!(s.history.len(), 0);
+    }
+
+    #[test]
+    fn wide_characters_take_two_columns() {
+        let mut s = Screen::new(5, 1);
+        feed(&mut s, "a漢b".as_bytes());
+        assert_eq!(s.visible_cell(1, 0).ch, '漢');
+        assert_eq!(s.visible_cell(2, 0).ch, '\0');
+        assert_eq!(s.visible_cell(3, 0).ch, 'b');
+        assert_eq!(s.text_between((0, 0), (0, 4)), "a漢b");
+    }
+
+    #[test]
+    fn underline_and_strikethrough() {
+        let mut s = Screen::new(2, 1);
+        feed(&mut s, b"\x1b[4;9mU\x1b[24;29mN");
+        assert!(s.visible_cell(0, 0).underline && s.visible_cell(0, 0).strikethrough);
+        assert!(!s.visible_cell(1, 0).underline && !s.visible_cell(1, 0).strikethrough);
+    }
+
+    #[test]
+    fn text_between_spans_rows_and_trims() {
+        let mut s = Screen::new(4, 2);
+        feed(&mut s, b"ab  \r\ncdef");
+        assert_eq!(s.text_between((0, 0), (1, 2)), "ab\ncde");
+        assert_eq!(s.text_between((1, 2), (0, 0)), "ab\ncde");
     }
 }
