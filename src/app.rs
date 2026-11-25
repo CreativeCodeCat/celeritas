@@ -166,7 +166,9 @@ impl App {
             .with_title(self.config.title.clone())
             .with_inner_size(size)
             .with_decorations(self.config.decorations)
-            .with_transparent(self.config.opacity < 1.0)
+            // Always transparent, so that changing opacity never needs a new window. At
+            // opacity 1.0 the background is opaque, so this looks the same.
+            .with_transparent(true)
             .with_theme(self.config.decorations_theme);
         // X11 uses the instance and general names as WM_CLASS; Wayland uses the general
         // name as the app id. Window-manager rules match on these.
@@ -174,7 +176,7 @@ impl App {
             attributes = WindowAttributesExtX11::with_name(attributes, general.clone(), instance.clone());
             attributes = WindowAttributesExtWayland::with_name(attributes, general.clone(), instance.clone());
         }
-        let template = ConfigTemplateBuilder::new().with_transparency(self.config.opacity < 1.0);
+        let template = ConfigTemplateBuilder::new().with_transparency(true);
         let (window, gl_config) = DisplayBuilder::new()
             .with_window_attributes(Some(attributes))
             .build(event_loop, template, |mut configs| {
@@ -231,7 +233,7 @@ impl App {
     }
 
     /// Re-read the configuration file if it has changed (`general.live_config_reload`).
-    fn check_config(&mut self, event_loop: &ActiveEventLoop) {
+    fn check_config(&mut self) {
         self.next_config_check = Instant::now() + CONFIG_CHECK_INTERVAL;
         let Some(path) = self.config_file.clone() else {
             return;
@@ -246,16 +248,15 @@ impl App {
                 if let Err(e) = new.apply_args(self.cli_args.clone()) {
                     eprintln!("celeritas: {e}");
                 }
-                self.apply_config(event_loop, new);
+                self.apply_config(new);
             }
             Err(e) => eprintln!("celeritas: {}: {e}", path.display()),
         }
     }
 
     /// Use a newly read configuration. The font, size and window size keep their current
-    /// values, which are fixed when the window is made. A change to transparency makes a new
-    /// window; the shell and the screen contents carry over.
-    fn apply_config(&mut self, event_loop: &ActiveEventLoop, mut new: Config) {
+    /// values, which are fixed when the window is made.
+    fn apply_config(&mut self, mut new: Config) {
         let fixed_changed = new.faces != self.config.faces
             || new.font_size != self.config.font_size
             || new.columns != self.config.columns
@@ -270,32 +271,19 @@ impl App {
         self.screen.set_history_limit(new.scrollback);
         self.screen.set_word_separators(&new.semantic_escape_chars);
 
-        if (new.opacity < 1.0) != (self.config.opacity < 1.0) {
-            self.config = new;
-            self.gfx = None;
-            match self.create_graphics(event_loop) {
-                Ok(gfx) => self.gfx = Some(gfx),
-                Err(e) => {
-                    eprintln!("celeritas: {e}");
-                    event_loop.exit();
-                    return;
-                }
+        if let Some(gfx) = self.gfx.as_mut() {
+            if new.title != self.config.title {
+                gfx.window.set_title(&new.title);
             }
-        } else {
-            if let Some(gfx) = self.gfx.as_mut() {
-                if new.title != self.config.title {
-                    gfx.window.set_title(&new.title);
-                }
-                if new.decorations != self.config.decorations {
-                    gfx.window.set_decorations(new.decorations);
-                }
-                if new.decorations_theme != self.config.decorations_theme {
-                    gfx.window.set_theme(new.decorations_theme);
-                }
-                gfx.renderer.opacity = new.opacity;
+            if new.decorations != self.config.decorations {
+                gfx.window.set_decorations(new.decorations);
             }
-            self.config = new;
+            if new.decorations_theme != self.config.decorations_theme {
+                gfx.window.set_theme(new.decorations_theme);
+            }
+            gfx.renderer.opacity = new.opacity;
         }
+        self.config = new;
         self.request_redraw();
     }
 
@@ -664,7 +652,7 @@ impl ApplicationHandler<()> for App {
             self.redraw_deferred = true;
         }
         if Instant::now() >= self.next_config_check {
-            self.check_config(event_loop);
+            self.check_config();
         }
         if self.redraw_deferred {
             let due = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
