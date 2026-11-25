@@ -63,6 +63,8 @@ void main() {
 pub struct Overlay {
     /// Selected range, as ordered (row, column) logical positions.
     pub selection: Option<((usize, usize), (usize, usize))>,
+    /// Whether the selection is a rectangle rather than a stream of text.
+    pub selection_block: bool,
     /// Cursor position on the view, if it should be drawn.
     pub cursor: Option<(usize, usize)>,
 }
@@ -213,7 +215,15 @@ impl Renderer {
                 let cell = screen.visible_cell(x, y);
                 let (_, bg) = cell_colors(&cell, colors);
                 let (px, py) = (x as f32 * cw, y as f32 * ch);
-                let selected = overlay.selection.is_some_and(|(s, e)| (top + y, x) >= s && (top + y, x) <= e);
+                let selected = overlay.selection.is_some_and(|(s, e)| {
+                    let p = (top + y, x);
+                    if overlay.selection_block {
+                        let (c0, c1) = (s.1.min(e.1), s.1.max(e.1));
+                        p.0 >= s.0 && p.0 <= e.0 && x >= c0 && x <= c1
+                    } else {
+                        p >= s && p <= e
+                    }
+                });
                 if selected {
                     push_quad(&mut self.vertices, px, py, cw, ch, [0.0; 4], SELECTION_COLOR, MODE_SOLID);
                 } else if bg != colors.background {

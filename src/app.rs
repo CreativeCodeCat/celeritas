@@ -40,6 +40,8 @@ const SCREENSHOT_FRAME: u32 = 10;
 struct Selection {
     anchor: (usize, usize),
     head: (usize, usize),
+    /// A rectangular selection (Alt-drag) rather than a stream of text.
+    block: bool,
 }
 
 impl Selection {
@@ -175,6 +177,7 @@ impl App {
         };
         let overlay = Overlay {
             selection: self.selection.and_then(|s| s.range()),
+            selection_block: self.selection.is_some_and(|s| s.block),
             cursor: self.screen.at_bottom().then(|| self.screen.cursor()),
         };
         gfx.renderer.draw(&self.screen, &self.config.colors, &overlay);
@@ -274,7 +277,11 @@ impl App {
         let Some((start, end)) = self.selection.and_then(|s| s.range()) else {
             return;
         };
-        let text = self.screen.text_between(start, end);
+        let text = if self.selection.is_some_and(|s| s.block) {
+            self.screen.block_text(start, end)
+        } else {
+            self.screen.text_between(start, end)
+        };
         if let (false, Some(clipboard)) = (text.is_empty(), self.clipboard.as_mut()) {
             clipboard.set(text);
         }
@@ -321,7 +328,8 @@ impl App {
             2 => self.screen.word_bounds(p.0, p.1),
             _ => self.screen.line_bounds(p.0),
         };
-        self.selection = Some(Selection { anchor, head });
+        let block = count == 1 && self.mods.alt;
+        self.selection = Some(Selection { anchor, head, block });
         self.selecting = count == 1;
         self.request_redraw();
     }

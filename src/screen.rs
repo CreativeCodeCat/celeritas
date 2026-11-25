@@ -266,6 +266,28 @@ impl Screen {
         out
     }
 
+    /// The text of a rectangular selection: the same columns on each row, one line per
+    /// row, with trailing spaces dropped. The two positions may come in either order.
+    pub fn block_text(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        let (r0, r1) = (a.0.min(b.0), a.0.max(b.0));
+        let (c0, c1) = (a.1.min(b.1), a.1.max(b.1));
+        let mut lines = Vec::new();
+        for row in r0..=r1 {
+            let mut line = String::new();
+            for col in c0..=c1 {
+                let c = self.cell_at(row, col);
+                if c.ch != '\0' {
+                    line.push(c.ch);
+                    for mark in c.marks.iter().flatten() {
+                        line.push(*mark);
+                    }
+                }
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
     /// The span of the word at a logical position: a run of letters and digits, a run of
     /// spaces, or a run of other characters. Returned as inclusive (row, column) bounds.
     pub fn word_bounds(&self, row: usize, col: usize) -> ((usize, usize), (usize, usize)) {
@@ -903,6 +925,14 @@ mod tests {
         feed(&mut s, b"\x1b[1;1H\x1b[M");
         assert_eq!(row(&s, 0), "  ");
         assert_eq!(row(&s, 1), "bb");
+    }
+
+    #[test]
+    fn block_text_takes_the_same_columns_on_each_row() {
+        let mut s = Screen::new(4, 2);
+        feed(&mut s, b"abcd\r\nefgh");
+        assert_eq!(s.block_text((0, 1), (1, 2)), "bc\nfg");
+        assert_eq!(s.block_text((1, 2), (0, 1)), "bc\nfg");
     }
 
     #[test]

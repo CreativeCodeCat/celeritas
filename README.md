@@ -7,7 +7,7 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 - Runs your `$SHELL` in a pseudo-terminal (PTY) and draws its output in a window
 - Handles the common ANSI/VT escape codes: cursor movement, erase, 16 and 256 colours, truecolour, underline and strikethrough
 - Scrollback history (mouse wheel, or Shift+PageUp/PageDown) and a separate alternate screen for full-screen programs
-- Mouse selection, copied with Ctrl+Shift+C; double-click selects a word, triple-click a line
+- Mouse selection, copied with Ctrl+Shift+C; double-click selects a word, triple-click a line, Alt+drag selects a rectangle
 - Scroll regions (`CSI r`), insert and delete line, and reverse index
 - Mouse reporting for programs (vim, tmux): the 1000, 1002 and 1003 modes, with legacy, UTF-8 (1005), SGR (1006) or URXVT (1015) encoding. Hold Shift to select text instead
 - Combining marks (accents, up to two per character) drawn over their base character
@@ -73,7 +73,6 @@ This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
 - Only the 1000, 1002 and 1003 mouse modes are supported
 - Italic text without a configured italic face is slanted in software, not drawn with a true italic. Set `font.italic` for a real one
-- Selection is by character cells, not blocks
 - Unsupported Alacritty options (key bindings, cursor style, opacity) are ignored
 
 ## License
