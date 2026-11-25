@@ -23,7 +23,11 @@ use config::Config;
 use pty::Pty;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::load();
+    let mut config = Config::load();
+    if let Err(e) = config.apply_args(std::env::args().skip(1)) {
+        eprintln!("celeritas: {e}");
+        std::process::exit(2);
+    }
     let event_loop = EventLoop::<()>::with_user_event().build()?;
     let pty = Pty::spawn(&config, config.columns as u16, config.lines as u16, event_loop.create_proxy())?;
     // Developer aid: save one frame to this path (binary PPM) and exit.

@@ -42,6 +42,13 @@ A minimal terminal emulator written in Rust. It opens its own window and runs yo
 
 Close the window to quit.
 
+Command-line options override the configuration file. They use the same spelling as
+Alacritty, so window-manager rules written for it work unchanged:
+
+    celeritas --title=NAME                  # window title
+    celeritas --class=INSTANCE,GENERAL      # window class (X11) / app id (Wayland)
+    celeritas -e btop --utf8                # run a program instead of the shell (must be last)
+
 ## Install
 
     make install               # binary to ~/.local/bin/celeritas

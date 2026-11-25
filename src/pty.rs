@@ -28,12 +28,21 @@ impl Pty {
     pub fn spawn(config: &Config, cols: u16, rows: u16, wake: EventLoopProxy<()>) -> Result<Pty, Box<dyn Error>> {
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
 
-        let shell = config
-            .shell
-            .clone()
-            .or_else(|| std::env::var("SHELL").ok())
-            .unwrap_or_else(|| "/bin/sh".to_string());
-        let mut cmd = CommandBuilder::new(shell);
+        let mut cmd = match config.command.split_first() {
+            Some((program, args)) => {
+                let mut cmd = CommandBuilder::new(program);
+                cmd.args(args);
+                cmd
+            }
+            None => {
+                let shell = config
+                    .shell
+                    .clone()
+                    .or_else(|| std::env::var("SHELL").ok())
+                    .unwrap_or_else(|| "/bin/sh".to_string());
+                CommandBuilder::new(shell)
+            }
+        };
         cmd.env("TERM", "xterm-256color");
         for (key, value) in &config.env {
             cmd.env(key, value);

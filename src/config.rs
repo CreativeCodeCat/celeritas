@@ -110,6 +110,10 @@ pub struct Config {
     pub cursor_style: CursorStyle,
     /// Key bindings from `keyboard.bindings`. Later entries take precedence.
     pub bindings: Vec<Binding>,
+    /// Window class as `(instance, general)`. Window managers match rules against it.
+    pub class: Option<(String, String)>,
+    /// Program to run instead of the shell, from `-e`. Empty means the shell.
+    pub command: Vec<String>,
 }
 
 impl Default for Config {
@@ -153,11 +157,48 @@ impl Default for Config {
             opacity: 1.0,
             cursor_style: CursorStyle::Block,
             bindings: Vec::new(),
+            class: None,
+            command: Vec::new(),
         }
     }
 }
 
 impl Config {
+    /// Apply command-line options, which override the configuration file. The spellings
+    /// follow Alacritty, so window-manager rules written for it keep working:
+    /// `--title TITLE`, `--class INSTANCE[,GENERAL]`, and `-e PROGRAM ARGS...` (which must
+    /// come last, since everything after it is the program's own arguments).
+    pub fn apply_args<I: IntoIterator<Item = String>>(&mut self, args: I) -> Result<(), String> {
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            let (flag, inline) = match arg.split_once('=') {
+                Some((flag, value)) if flag.starts_with("--") => (flag.to_string(), Some(value.to_string())),
+                _ => (arg.clone(), None),
+            };
+            match flag.as_str() {
+                "-e" | "--command" => {
+                    self.command = args.by_ref().collect();
+                    if self.command.is_empty() {
+                        return Err(format!("{flag} needs a program"));
+                    }
+                }
+                "--title" | "-t" | "--class" => {
+                    let value = match inline {
+                        Some(value) => value,
+                        None => args.next().ok_or_else(|| format!("{flag} needs a value"))?,
+                    };
+                    if flag == "--class" {
+                        self.class = Some(parse_class(&value));
+                    } else {
+                        self.title = value;
+                    }
+                }
+                other => return Err(format!("unknown option {other}")),
+            }
+        }
+        Ok(())
+    }
+
     /// Load the user's config. If there is none, write the default one first; a broken
     /// file prints an error and uses defaults, so the terminal always starts.
     pub fn load() -> Config {
@@ -203,6 +244,14 @@ fn load_file(path: &PathBuf) -> Result<Config, Box<dyn Error>> {
 }
 
 /// Run the config source and read its settings.
+/// `"a,b"` is instance `a` and general `b`; `"a"` sets both to `a`, as Alacritty does.
+fn parse_class(value: &str) -> (String, String) {
+    match value.split_once(',') {
+        Some((instance, general)) => (instance.to_string(), general.to_string()),
+        None => (value.to_string(), value.to_string()),
+    }
+}
+
 fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     let lua = Lua::new();
     let root: Table = lua.load(source).eval()?;
@@ -490,5 +539,37 @@ mod tests {
     #[test]
     fn syntax_error_is_an_error() {
         assert!(parse("return {").is_err());
+    }
+
+    fn args(list: &[&str]) -> Result<Config, String> {
+        let mut config = Config::default();
+        config.apply_args(list.iter().map(|s| s.to_string()))?;
+        Ok(config)
+    }
+
+    #[test]
+    fn alacritty_style_options() {
+        let c = args(&["--title=scratchpad_terminal", "--class=scratchpad_terminal,scratchpad_terminal"]).unwrap();
+        assert_eq!(c.title, "scratchpad_terminal");
+        assert_eq!(c.class, Some(("scratchpad_terminal".to_string(), "scratchpad_terminal".to_string())));
+        assert!(c.command.is_empty());
+
+        let c = args(&["--class", "btop,terminal"]).unwrap();
+        assert_eq!(c.class, Some(("btop".to_string(), "terminal".to_string())));
+        let c = args(&["-t", "x"]).unwrap();
+        assert_eq!(c.title, "x");
+    }
+
+    #[test]
+    fn dash_e_takes_the_rest_of_the_line() {
+        let c = args(&["--class=scratchpad_btop,scratchpad_btop", "-e", "btop", "--utf8", "-x"]).unwrap();
+        assert_eq!(c.command, vec!["btop", "--utf8", "-x"]);
+        assert!(args(&["-e"]).is_err());
+    }
+
+    #[test]
+    fn unknown_options_are_errors() {
+        assert!(args(&["--nope"]).is_err());
+        assert!(args(&["--title"]).is_err());
     }
 }

@@ -19,6 +19,8 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
+use winit::platform::wayland::WindowAttributesExtWayland;
+use winit::platform::x11::WindowAttributesExtX11;
 use winit::window::{Window, WindowAttributes};
 
 use crate::clipboard::Clipboard;
@@ -120,11 +122,17 @@ impl App {
             (self.config.lines as f32 * fonts.cell_height).ceil() as u32,
         );
 
-        let attributes = WindowAttributes::default()
+        let mut attributes = WindowAttributes::default()
             .with_title(self.config.title.clone())
             .with_inner_size(size)
             .with_decorations(self.config.decorations)
             .with_transparent(self.config.opacity < 1.0);
+        // X11 uses the instance and general names as WM_CLASS; Wayland uses the general
+        // name as the app id. Window-manager rules match on these.
+        if let Some((instance, general)) = &self.config.class {
+            attributes = WindowAttributesExtX11::with_name(attributes, general.clone(), instance.clone());
+            attributes = WindowAttributesExtWayland::with_name(attributes, general.clone(), instance.clone());
+        }
         let template = ConfigTemplateBuilder::new().with_transparency(self.config.opacity < 1.0);
         let (window, gl_config) = DisplayBuilder::new()
             .with_window_attributes(Some(attributes))
@@ -142,7 +150,9 @@ impl App {
         // SAFETY: as above, the surface is owned by the same `Graphics` value.
         let surface = unsafe { display.create_window_surface(&gl_config, &surface_attributes)? };
         let context = not_current.make_current(&surface)?;
-        let _ = surface.set_swap_interval(&context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
+        // Don't wait for vsync. On a hidden workspace the compositor sends no frame
+        // callbacks, so a waiting swap blocks forever and the window stops responding.
+        let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
 
         // SAFETY: the context is current on this thread, and the loader only reads symbols.
         let gl = unsafe { glow::Context::from_loader_function_cstr(|name: &CStr| display.get_proc_address(name)) };
