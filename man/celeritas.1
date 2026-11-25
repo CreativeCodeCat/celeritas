@@ -1,5 +1,5 @@
-.\" Man page for celeritas.
-.TH CELERITAS 1 "2026" "celeritas" "User Commands"
+.\" Man page for Celeritas.
+.TH CELERITAS 1 "2026" "Celeritas" "User Commands"
 .SH NAME
 celeritas \- a minimal terminal emulator with its own window
 .SH SYNOPSIS
@@ -75,9 +75,9 @@ or, if
 .B XDG_CONFIG_HOME
 is unset,
 .IR ~/.config/celeritas/celeritas.lua .
-If the file does not exist, celeritas creates it with the default settings on first launch. The file is Lua code that returns a table, grouped into sections. Anything left out uses its default. A file with errors prints a message and falls back to the defaults.
+If the file does not exist, Celeritas creates it with the default settings on first launch. The file is Lua code that returns a table, grouped into sections. Anything left out uses its default. A file with errors prints a message and falls back to the defaults.
 .PP
-The file is changed while celeritas runs: it is read again within a second. The font, the window size and whether the window is transparent take effect only after a restart. The
+The file is changed while Celeritas runs: it is read again within a second. The font, the window size and whether the window is transparent take effect only after a restart. The
 .BR shell ,
 .B env
 and
@@ -199,7 +199,7 @@ entry sends the text to the shell. Actions are
 .SS general
 .TP
 .B working_directory
-Directory the shell starts in (default: where celeritas was started).
+Directory the shell starts in (default: where Celeritas was started).
 .TP
 .B live_config_reload
 Re-read the file when it changes (default true).
@@ -244,4 +244,4 @@ The configuration file.
 .SH SEE ALSO
 .BR sh (1)
 .SH LICENSE
-celeritas is free software, released under the GNU General Public License, version 3 or later. It comes with no warranty.
+Celeritas is free software, released under the GNU General Public License, version 3 or later. It comes with no warranty.

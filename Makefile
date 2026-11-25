@@ -1,4 +1,4 @@
-# celeritas Makefile
+# Celeritas Makefile
 #
 #   make            build the release binary
 #   make install    build and install the binary, man page and app-menu launcher

@@ -1,4 +1,4 @@
-//! celeritas: a small terminal emulator with its own window.
+//! Celeritas: a small terminal emulator with its own window.
 //!
 //! The user's shell runs inside a pseudo-terminal (PTY). Its output is parsed by `vte`
 //! into a virtual `Screen`, which is drawn with OpenGL (`renderer`) in a window made by
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut config = Config::load();
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(e) = config.apply_args(cli_args.iter().cloned()) {
-        eprintln!("celeritas: {e}");
+        eprintln!("Celeritas: {e}");
         std::process::exit(2);
     }
     let event_loop = EventLoop::<()>::with_user_event().build()?;

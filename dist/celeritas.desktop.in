@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=celeritas
+Name=Celeritas
 Comment=A minimal terminal emulator
 Exec=@BINDIR@/celeritas
 TryExec=@BINDIR@/celeritas

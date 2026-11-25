@@ -1,4 +1,4 @@
--- celeritas configuration.
+-- Celeritas configuration.
 --
 -- This file is Lua: it must return a table. Anything you leave out uses the
 -- built-in default. Colours are "0xRRGGBB" or "#RRGGBB".
@@ -79,7 +79,7 @@ return {
   },
 
   general = {
-    -- Directory the shell starts in (default: where celeritas was started).
+    -- Directory the shell starts in (default: where Celeritas was started).
     working_directory = nil,
   },
 }

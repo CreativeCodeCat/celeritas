@@ -53,7 +53,7 @@ impl FontSet {
         let normal = match rasterizer.load_font(&desc(&normal_face, "Regular"), size) {
             Ok(key) => key,
             Err(e) => {
-                eprintln!("celeritas: font {:?} not usable ({e}); using monospace", normal_face.family);
+                eprintln!("Celeritas: font {:?} not usable ({e}); using monospace", normal_face.family);
                 rasterizer.load_font(&desc(&face("monospace", "Regular"), "Regular"), size)?
             }
         };

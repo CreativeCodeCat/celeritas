@@ -315,11 +315,11 @@ impl App {
         match crate::config::load_file(&path) {
             Ok(mut new) => {
                 if let Err(e) = new.apply_args(self.cli_args.clone()) {
-                    eprintln!("celeritas: {e}");
+                    eprintln!("Celeritas: {e}");
                 }
                 self.apply_config(new);
             }
-            Err(e) => eprintln!("celeritas: {}: {e}", path.display()),
+            Err(e) => eprintln!("Celeritas: {}: {e}", path.display()),
         }
     }
 
@@ -331,7 +331,7 @@ impl App {
             || new.columns != self.config.columns
             || new.lines != self.config.lines;
         if fixed_changed {
-            eprintln!("celeritas: font and size changes take effect after a restart");
+            eprintln!("Celeritas: font and size changes take effect after a restart");
         }
         new.faces = self.config.faces.clone();
         new.font_size = self.config.font_size;
@@ -487,7 +487,7 @@ impl App {
             if self.frames == SCREENSHOT_FRAME {
                 let (w, h) = (gfx.renderer.size().0, gfx.renderer.size().1);
                 if let Err(e) = write_ppm(path, &gfx.renderer.read_pixels(), w, h) {
-                    eprintln!("celeritas: could not save screenshot: {e}");
+                    eprintln!("Celeritas: could not save screenshot: {e}");
                 }
                 event_loop.exit();
                 return;
@@ -582,7 +582,7 @@ impl App {
 
     fn key_press(&mut self, key: &Key, text: Option<&str>) {
         if debug_enabled() {
-            eprintln!("celeritas: key {key:?} mods {:?} clipboard {}", self.mods, self.clipboard.is_some());
+            eprintln!("Celeritas: key {key:?} mods {:?} clipboard {}", self.mods, self.clipboard.is_some());
         }
         // Configured bindings come first, so they can replace the built-in keys.
         if let Some(action) = self.binding_for(key) {
@@ -656,13 +656,13 @@ impl App {
     fn copy_selection(&mut self) {
         if self.selection.and_then(|s| s.range()).is_none() {
             if debug_enabled() {
-                eprintln!("celeritas: copy with no selection");
+                eprintln!("Celeritas: copy with no selection");
             }
             return;
         }
         let text = self.selected_text();
         if debug_enabled() {
-            eprintln!("celeritas: copy {} chars, clipboard {}", text.len(), self.clipboard.is_some());
+            eprintln!("Celeritas: copy {} chars, clipboard {}", text.len(), self.clipboard.is_some());
         }
         if let (false, Some(clipboard)) = (text.is_empty(), self.clipboard.as_mut()) {
             clipboard.set(text);
@@ -672,7 +672,7 @@ impl App {
     fn paste(&mut self) {
         let text = self.clipboard.as_mut().and_then(|c| c.get());
         if debug_enabled() {
-            eprintln!("celeritas: paste {:?} chars", text.as_ref().map(|t| t.len()));
+            eprintln!("Celeritas: paste {:?} chars", text.as_ref().map(|t| t.len()));
         }
         if let Some(text) = text {
             self.paste_text(text);
@@ -866,7 +866,7 @@ impl ApplicationHandler<()> for App {
                 self.request_redraw();
             }
             Err(e) => {
-                eprintln!("celeritas: {e}");
+                eprintln!("Celeritas: {e}");
                 event_loop.exit();
             }
         }

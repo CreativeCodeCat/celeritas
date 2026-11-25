@@ -111,7 +111,7 @@ pub struct Config {
     pub colors: Colors,
     /// Shell to run. `None` means `$SHELL`.
     pub shell: Option<String>,
-    /// Directory the shell starts in. `None` means the directory celeritas was started from.
+    /// Directory the shell starts in. `None` means the directory Celeritas was started from.
     pub working_directory: Option<PathBuf>,
     /// Extra environment variables for the shell.
     pub env: Vec<(String, String)>,
@@ -258,14 +258,14 @@ impl Config {
         };
         if !path.exists() {
             if let Err(e) = write_default(&path) {
-                eprintln!("celeritas: could not create {}: {e}", path.display());
+                eprintln!("Celeritas: could not create {}: {e}", path.display());
             }
             return Config::default();
         }
         match load_file(&path) {
             Ok(config) => config,
             Err(e) => {
-                eprintln!("celeritas: could not load {}: {e}\nusing default settings", path.display());
+                eprintln!("Celeritas: could not load {}: {e}\nusing default settings", path.display());
                 Config::default()
             }
         }
