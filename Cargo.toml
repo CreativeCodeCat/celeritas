@@ -1,0 +1,11 @@
+[package]
+name = "celeritas"
+version = "0.1.0"
+edition = "2021"
+description = "A minimal terminal emulator written in Rust"
+
+[dependencies]
+eframe = "0.37.0"
+mlua = { version = "0.12.3", features = ["lua54", "vendored"] }
+portable-pty = "0.8" # spawns the shell inside a pseudo-terminal
+vte = "0.13"         # VT/ANSI escape sequence parser

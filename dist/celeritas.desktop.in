@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=celeritas
+Comment=A minimal terminal emulator
+Exec=@BINDIR@/celeritas
+TryExec=@BINDIR@/celeritas
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;console;
