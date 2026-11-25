@@ -104,6 +104,20 @@ fn named_key_bytes(key: NamedKey, mods: Mods) -> Option<&'static [u8]> {
     })
 }
 
+/// The bytes for cursor keys when the program has asked for application cursor keys
+/// (DECCKM, mode 1). Programs such as vim and less expect `ESC O x` for these.
+pub fn application_cursor_bytes(key: &Key) -> Option<&'static [u8]> {
+    Some(match key {
+        Key::Named(NamedKey::ArrowUp) => b"\x1bOA",
+        Key::Named(NamedKey::ArrowDown) => b"\x1bOB",
+        Key::Named(NamedKey::ArrowRight) => b"\x1bOC",
+        Key::Named(NamedKey::ArrowLeft) => b"\x1bOD",
+        Key::Named(NamedKey::Home) => b"\x1bOH",
+        Key::Named(NamedKey::End) => b"\x1bOF",
+        _ => return None,
+    })
+}
+
 /// Ctrl plus a key: the matching control byte (Ctrl-A = 0x01, Ctrl-C = 0x03, ...).
 fn control_bytes(s: &str) -> Option<Vec<u8>> {
     let mut chars = s.chars();

@@ -109,6 +109,14 @@ pub struct Screen {
     mouse_tracking: u16,
     /// How mouse reports are encoded.
     mouse_encoding: MouseEncoding,
+    /// DECCKM (mode 1): arrow keys send `ESC O x` instead of `ESC [ x`.
+    app_cursor_keys: bool,
+    /// DECTCEM (mode 25): whether the cursor is drawn.
+    cursor_visible: bool,
+    /// Mode 2004: pasted text is wrapped in `ESC [200~` and `ESC [201~`.
+    bracketed_paste: bool,
+    /// Mode 1004: the window reports focus gained and lost with `ESC [I` and `ESC [O`.
+    focus_reporting: bool,
 }
 
 impl Screen {
@@ -134,6 +142,10 @@ impl Screen {
             scroll_bottom: rows - 1,
             mouse_tracking: 0,
             mouse_encoding: MouseEncoding::Legacy,
+            app_cursor_keys: false,
+            cursor_visible: true,
+            bracketed_paste: false,
+            focus_reporting: false,
         }
     }
 
@@ -173,6 +185,26 @@ impl Screen {
     /// How mouse reports should be encoded.
     pub fn mouse_encoding(&self) -> MouseEncoding {
         self.mouse_encoding
+    }
+
+    /// Whether arrow keys should send the application form (`ESC O x`).
+    pub fn app_cursor_keys(&self) -> bool {
+        self.app_cursor_keys
+    }
+
+    /// Whether the program wants the cursor drawn.
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+
+    /// Whether pasted text should be wrapped in the bracketed-paste markers.
+    pub fn bracketed_paste(&self) -> bool {
+        self.bracketed_paste
+    }
+
+    /// Whether the window should report focus changes to the program.
+    pub fn focus_reporting(&self) -> bool {
+        self.focus_reporting
     }
 
     /// Scroll the view up (positive) or down (negative) through the history.
@@ -701,6 +733,10 @@ impl Perform for Screen {
                                 self.mouse_tracking = 0;
                             }
                         }
+                        1 => self.app_cursor_keys = set,
+                        25 => self.cursor_visible = set,
+                        1004 => self.focus_reporting = set,
+                        2004 => self.bracketed_paste = set,
                         1005 | 1006 | 1015 => {
                             let wanted = match mode {
                                 1005 => MouseEncoding::Utf8,
@@ -953,5 +989,20 @@ mod tests {
         assert_eq!(s.mouse_encoding(), MouseEncoding::Sgr);
         feed(&mut s, b"\x1b[?1006l");
         assert_eq!(s.mouse_encoding(), MouseEncoding::Legacy);
+    }
+
+    #[test]
+    fn input_modes_are_tracked() {
+        let mut s = Screen::new(3, 1);
+        assert!(s.cursor_visible());
+        assert!(!s.app_cursor_keys() && !s.bracketed_paste() && !s.focus_reporting());
+
+        feed(&mut s, b"\x1b[?1h\x1b[?25l\x1b[?2004h\x1b[?1004h");
+        assert!(s.app_cursor_keys() && !s.cursor_visible());
+        assert!(s.bracketed_paste() && s.focus_reporting());
+
+        feed(&mut s, b"\x1b[?1l\x1b[?25h\x1b[?2004l\x1b[?1004l");
+        assert!(!s.app_cursor_keys() && s.cursor_visible());
+        assert!(!s.bracketed_paste() && !s.focus_reporting());
     }
 }

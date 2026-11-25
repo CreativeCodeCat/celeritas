@@ -26,7 +26,7 @@ use winit::window::{Window, WindowAttributes};
 use crate::clipboard::Clipboard;
 use crate::config::{BindingAction, Config};
 use crate::font::FontSet;
-use crate::input::{key_bytes, key_name, Mods};
+use crate::input::{application_cursor_bytes, key_bytes, key_name, Mods};
 use crate::pty::{Pty, PtyMsg};
 use crate::renderer::{Overlay, Renderer};
 use crate::screen::MouseEncoding;
@@ -230,7 +230,7 @@ impl App {
         let overlay = Overlay {
             selection: self.selection.and_then(|s| s.range()),
             selection_block: self.selection.is_some_and(|s| s.block),
-            cursor: self.screen.at_bottom().then(|| self.screen.cursor()),
+            cursor: (self.screen.at_bottom() && self.screen.cursor_visible()).then(|| self.screen.cursor()),
             cursor_style: self.config.cursor_style,
         };
         gfx.renderer.draw(&self.screen, &self.config.colors, &overlay);
@@ -363,6 +363,14 @@ impl App {
                 _ => {}
             }
         }
+        let plain = !m.shift && !m.ctrl && !m.alt;
+        if plain && self.screen.app_cursor_keys() {
+            if let Some(bytes) = application_cursor_bytes(key) {
+                self.screen.reset_view();
+                self.write(bytes);
+                return;
+            }
+        }
         if let Some(bytes) = key_bytes(key, text, m) {
             self.screen.reset_view();
             self.write(&bytes);
@@ -399,7 +407,16 @@ impl App {
         };
         // The shell expects carriage returns for new lines, as the Enter key sends.
         self.screen.reset_view();
-        self.write(text.replace('\n', "\r").as_bytes());
+        let body = text.replace('\n', "\r");
+        if self.screen.bracketed_paste() {
+            // Programs that asked for bracketed paste can tell pasted text from typing.
+            let mut out = b"\x1b[200~".to_vec();
+            out.extend_from_slice(body.as_bytes());
+            out.extend_from_slice(b"\x1b[201~");
+            self.write(&out);
+        } else {
+            self.write(body.as_bytes());
+        }
     }
 
     /// The view cell (column, row) under the mouse pointer, clamped to the grid.
@@ -577,6 +594,11 @@ impl ApplicationHandler<()> for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 let state = modifiers.state();
                 self.mods = Mods { shift: state.shift_key(), ctrl: state.control_key(), alt: state.alt_key() };
+            }
+            WindowEvent::Focused(focused) => {
+                if self.screen.focus_reporting() {
+                    self.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
+                }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.key_press(&event.logical_key, event.text.as_deref());
