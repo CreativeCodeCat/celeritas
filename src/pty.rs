@@ -44,6 +44,8 @@ impl Pty {
             }
         };
         cmd.env("TERM", "xterm-256color");
+        // Lets programs in the terminal (such as fastfetch) show which terminal and version.
+        cmd.env("CELERITAS_VERSION", env!("CARGO_PKG_VERSION"));
         for (key, value) in &config.env {
             cmd.env(key, value);
         }
