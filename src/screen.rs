@@ -2,14 +2,15 @@
 //!
 //! Rows that scroll off the top of the main screen are kept as scrollback history.
 //! The alternate screen (used by vim, less, ...) is a separate grid that is discarded
-//! when the program leaves it, and the main screen is restored.
+//! when the program leaves it, and the main screen is restored. A scroll region
+//! (`CSI r`) confines scrolling to a band of rows.
 
 use std::collections::VecDeque;
 
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
-/// A colour as the program asked for it; the GUI maps it to real pixels.
+/// A colour as the program asked for it; the renderer maps it to real pixels.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Color {
     /// The terminal's default foreground or background.
@@ -23,6 +24,8 @@ pub enum Color {
 pub struct Cell {
     /// The character shown. `'\0'` marks the second column of a wide character.
     pub ch: char,
+    /// A combining mark drawn over `ch`. Only the first one is kept.
+    pub mark: Option<char>,
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
@@ -37,6 +40,7 @@ impl Default for Cell {
     fn default() -> Self {
         Cell {
             ch: ' ',
+            mark: None,
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
@@ -55,6 +59,7 @@ pub const DEFAULT_HISTORY: usize = 10_000;
 /// The main screen, saved while the alternate screen is active.
 struct SavedMain {
     cells: Vec<Cell>,
+    wrapped: Vec<bool>,
     cx: usize,
     cy: usize,
 }
@@ -63,6 +68,8 @@ pub struct Screen {
     pub cols: usize,
     pub rows: usize,
     cells: Vec<Cell>,
+    /// Per live row: true if the row continues on the next one (the text autowrapped).
+    wrapped: Vec<bool>,
     cx: usize,
     cy: usize,
     saved: (usize, usize),
@@ -75,11 +82,20 @@ pub struct Screen {
     replies: Vec<u8>,
     /// Rows that scrolled off the top of the main screen, oldest first.
     history: VecDeque<Vec<Cell>>,
+    /// The `wrapped` flag of each history row, in step with `history`.
+    history_wrapped: VecDeque<bool>,
     history_limit: usize,
     /// How many history rows the view is scrolled up by (0 = showing the live screen).
     view_offset: usize,
     /// The main screen while the alternate screen is active.
     alt_saved: Option<SavedMain>,
+    /// Top and bottom rows (inclusive) of the scroll region.
+    scroll_top: usize,
+    scroll_bottom: usize,
+    /// Mouse tracking mode requested by the program: 0 (off), 1000, 1002 or 1003.
+    mouse_tracking: u16,
+    /// Whether mouse reports use the SGR (1006) encoding.
+    mouse_sgr: bool,
 }
 
 impl Screen {
@@ -89,6 +105,7 @@ impl Screen {
             cols,
             rows,
             cells: vec![Cell::default(); cols * rows],
+            wrapped: vec![false; rows],
             cx: 0,
             cy: 0,
             saved: (0, 0),
@@ -96,9 +113,14 @@ impl Screen {
             pen: Cell::default(),
             replies: Vec::new(),
             history: VecDeque::new(),
+            history_wrapped: VecDeque::new(),
             history_limit: DEFAULT_HISTORY,
             view_offset: 0,
             alt_saved: None,
+            scroll_top: 0,
+            scroll_bottom: rows - 1,
+            mouse_tracking: 0,
+            mouse_sgr: false,
         }
     }
 
@@ -115,14 +137,29 @@ impl Screen {
     /// Set how many scrollback rows to keep. 0 disables scrollback.
     pub fn set_history_limit(&mut self, limit: usize) {
         self.history_limit = limit;
-        while self.history.len() > limit {
-            self.history.pop_front();
-        }
+        self.trim_history();
         self.view_offset = self.view_offset.min(self.history.len());
+    }
+
+    fn trim_history(&mut self) {
+        while self.history.len() > self.history_limit {
+            self.history.pop_front();
+            self.history_wrapped.pop_front();
+        }
     }
 
     pub fn in_alt_screen(&self) -> bool {
         self.alt_saved.is_some()
+    }
+
+    /// The mouse tracking mode the program asked for (0 = none).
+    pub fn mouse_tracking(&self) -> u16 {
+        self.mouse_tracking
+    }
+
+    /// Whether mouse reports should use the SGR encoding.
+    pub fn mouse_sgr(&self) -> bool {
+        self.mouse_sgr
     }
 
     /// Scroll the view up (positive) or down (negative) through the history.
@@ -151,6 +188,11 @@ impl Screen {
         self.history.len() - self.view_offset
     }
 
+    /// Number of logical rows: history plus the live screen.
+    pub fn total_rows(&self) -> usize {
+        self.history.len() + self.rows
+    }
+
     /// The cell shown at column `x`, row `y` of the view.
     pub fn visible_cell(&self, x: usize, y: usize) -> Cell {
         self.cell_at(self.first_visible_row() + y, x)
@@ -170,11 +212,22 @@ impl Screen {
         }
     }
 
-    /// The plain text between two logical positions (inclusive), one line per row.
-    /// Trailing spaces on each line are dropped. The two positions may come in either order.
+    /// Whether a logical row continues onto the next one (it was wrapped, not ended).
+    pub fn row_wrapped(&self, row: usize) -> bool {
+        if row < self.history.len() {
+            self.history_wrapped[row]
+        } else {
+            let y = row - self.history.len();
+            y < self.rows && self.wrapped[y]
+        }
+    }
+
+    /// The plain text between two logical positions (inclusive). Rows that were wrapped
+    /// are joined without a newline; other rows end with one. Trailing spaces on a line
+    /// are dropped. The two positions may come in either order.
     pub fn text_between(&self, a: (usize, usize), b: (usize, usize)) -> String {
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        let mut lines = Vec::new();
+        let mut out = String::new();
         for row in start.0..=end.0 {
             let first = if row == start.0 { start.1 } else { 0 };
             let last = if row == end.0 { end.1 } else { self.cols.saturating_sub(1) };
@@ -183,18 +236,64 @@ impl Screen {
                 let c = self.cell_at(row, col);
                 if c.ch != '\0' {
                     line.push(c.ch);
+                    if let Some(mark) = c.mark {
+                        line.push(mark);
+                    }
                 }
             }
-            lines.push(line.trim_end().to_string());
+            if self.row_wrapped(row) {
+                out.push_str(&line);
+            } else {
+                out.push_str(line.trim_end());
+                if row != end.0 {
+                    out.push('\n');
+                }
+            }
         }
-        lines.join("\n")
+        out
+    }
+
+    /// The span of the word at a logical position: a run of letters and digits, a run of
+    /// spaces, or a run of other characters. Returned as inclusive (row, column) bounds.
+    pub fn word_bounds(&self, row: usize, col: usize) -> ((usize, usize), (usize, usize)) {
+        // Wide characters' second column counts as part of the character before it.
+        let class = |c: char| match c {
+            ' ' => 0,
+            c if c.is_alphanumeric() || c == '_' || c == '\0' => 1,
+            _ => 2,
+        };
+        let target = class(self.cell_at(row, col).ch);
+        let mut start = col;
+        while start > 0 && class(self.cell_at(row, start - 1).ch) == target {
+            start -= 1;
+        }
+        let mut end = col;
+        while end + 1 < self.cols && class(self.cell_at(row, end + 1).ch) == target {
+            end += 1;
+        }
+        ((row, start), (row, end))
+    }
+
+    /// The span of the whole logical line at a row, including any rows it wraps onto.
+    pub fn line_bounds(&self, row: usize) -> ((usize, usize), (usize, usize)) {
+        let mut first = row;
+        while first > 0 && self.row_wrapped(first - 1) {
+            first -= 1;
+        }
+        let mut last = row;
+        while self.row_wrapped(last) && last + 1 < self.total_rows() {
+            last += 1;
+        }
+        ((first, 0), (last, self.cols - 1))
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let (cols, rows) = (cols.max(1), rows.max(1));
         self.cells = reflow(&self.cells, self.cols, self.rows, cols, rows);
+        self.wrapped.resize(rows, false);
         if let Some(saved) = self.alt_saved.as_mut() {
             saved.cells = reflow(&saved.cells, self.cols, self.rows, cols, rows);
+            saved.wrapped.resize(rows, false);
             saved.cx = saved.cx.min(cols - 1);
             saved.cy = saved.cy.min(rows - 1);
         }
@@ -203,6 +302,8 @@ impl Screen {
         self.cx = self.cx.min(cols - 1);
         self.cy = self.cy.min(rows - 1);
         self.wrap_pending = false;
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
     }
 
     fn blank(&self) -> Cell {
@@ -217,18 +318,43 @@ impl Screen {
         }
     }
 
-    fn scroll_up(&mut self) {
-        let top: Vec<Cell> = self.cells[..self.cols].to_vec();
-        self.cells.drain(0..self.cols);
+    fn region_is_full(&self) -> bool {
+        self.scroll_top == 0 && self.scroll_bottom + 1 == self.rows
+    }
+
+    /// Move rows `top+1..=bottom` up by one, clearing row `bottom`.
+    fn shift_up(&mut self, top: usize, bottom: usize) {
+        let cols = self.cols;
+        self.cells.copy_within((top + 1) * cols..(bottom + 1) * cols, top * cols);
+        self.wrapped.remove(top);
+        self.wrapped.insert(bottom, false);
         let blank = self.blank();
-        self.cells.extend(std::iter::repeat(blank).take(self.cols));
+        self.cells[bottom * cols..(bottom + 1) * cols].fill(blank);
+    }
+
+    /// Move rows `top..bottom` down by one, clearing row `top`.
+    fn shift_down(&mut self, top: usize, bottom: usize) {
+        let cols = self.cols;
+        self.cells.copy_within(top * cols..bottom * cols, (top + 1) * cols);
+        self.wrapped.remove(bottom);
+        self.wrapped.insert(top, false);
+        let blank = self.blank();
+        self.cells[top * cols..(top + 1) * cols].fill(blank);
+    }
+
+    /// Scroll the scroll region up one line. Rows that leave a full-screen region go
+    /// into the scrollback history.
+    fn scroll_up(&mut self) {
+        let (top, bottom, cols) = (self.scroll_top, self.scroll_bottom, self.cols);
+        let removed = self.cells[top * cols..(top + 1) * cols].to_vec();
+        let removed_wrapped = self.wrapped[top];
+        self.shift_up(top, bottom);
 
         // The alternate screen has no scrollback.
-        if !self.in_alt_screen() && self.history_limit > 0 {
-            self.history.push_back(top);
-            if self.history.len() > self.history_limit {
-                self.history.pop_front();
-            }
+        if self.region_is_full() && !self.in_alt_screen() && self.history_limit > 0 {
+            self.history.push_back(removed);
+            self.history_wrapped.push_back(removed_wrapped);
+            self.trim_history();
             // Keep a scrolled-back view showing the same text as new rows arrive.
             if self.view_offset > 0 {
                 self.view_offset = (self.view_offset + 1).min(self.history.len());
@@ -237,20 +363,39 @@ impl Screen {
     }
 
     fn newline(&mut self) {
-        if self.cy + 1 >= self.rows {
+        if self.cy == self.scroll_bottom {
             self.scroll_up();
-        } else {
+        } else if self.cy + 1 < self.rows {
             self.cy += 1;
         }
     }
 
+    /// Reverse index (ESC M): move up, scrolling the region down at its top.
+    fn reverse_index(&mut self) {
+        if self.cy == self.scroll_top {
+            self.shift_down(self.scroll_top, self.scroll_bottom);
+        } else {
+            self.cy = self.cy.saturating_sub(1);
+        }
+    }
+
+    fn set_wrapped(&mut self, wrapped: bool) {
+        self.wrapped[self.cy] = wrapped;
+    }
+
     fn put_char(&mut self, ch: char) {
-        // Wide characters (CJK, most emoji) take two columns; zero-width ones are dropped.
+        // Wide characters (CJK, most emoji) take two columns. Zero-width characters
+        // (combining marks) attach to the character before them.
         let width = match UnicodeWidthChar::width(ch) {
-            Some(0) | None => return,
+            None => return,
+            Some(0) => {
+                self.add_mark(ch);
+                return;
+            }
             Some(w) => w.min(self.cols).min(2),
         };
         if self.wrap_pending || self.cx + width > self.cols {
+            self.set_wrapped(true);
             self.cx = 0;
             self.newline();
             self.wrap_pending = false;
@@ -269,22 +414,46 @@ impl Screen {
         }
     }
 
+    fn add_mark(&mut self, ch: char) {
+        let col = if self.wrap_pending {
+            self.cx
+        } else if self.cx > 0 {
+            self.cx - 1
+        } else {
+            return;
+        };
+        let mut idx = self.cy * self.cols + col;
+        // If the character is the right half of a wide one, mark the left half.
+        if self.cells[idx].ch == '\0' && col > 0 {
+            idx -= 1;
+        }
+        if self.cells[idx].mark.is_none() {
+            self.cells[idx].mark = Some(ch);
+        }
+    }
+
     fn enter_alt_screen(&mut self) {
         if self.in_alt_screen() {
             return;
         }
-        let main = std::mem::replace(&mut self.cells, vec![Cell::default(); self.cols * self.rows]);
-        self.alt_saved = Some(SavedMain { cells: main, cx: self.cx, cy: self.cy });
+        let cells = std::mem::replace(&mut self.cells, vec![Cell::default(); self.cols * self.rows]);
+        let wrapped = std::mem::replace(&mut self.wrapped, vec![false; self.rows]);
+        self.alt_saved = Some(SavedMain { cells, wrapped, cx: self.cx, cy: self.cy });
         self.cx = 0;
         self.cy = 0;
         self.view_offset = 0;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows - 1;
     }
 
     fn leave_alt_screen(&mut self) {
         if let Some(saved) = self.alt_saved.take() {
             self.cells = saved.cells;
+            self.wrapped = saved.wrapped;
             self.cx = saved.cx;
             self.cy = saved.cy;
+            self.scroll_top = 0;
+            self.scroll_bottom = self.rows - 1;
         }
     }
 
@@ -375,6 +544,8 @@ impl Perform for Screen {
     fn execute(&mut self, byte: u8) {
         match byte {
             b'\n' | 0x0b | 0x0c => {
+                // A line feed ends the row: it is not a wrap.
+                self.set_wrapped(false);
                 self.newline();
                 self.wrap_pending = false;
             }
@@ -410,7 +581,10 @@ impl Perform for Screen {
                 match p.first().copied().unwrap_or(0) {
                     0 => self.fill(start..len),
                     1 => self.fill(0..start + 1),
-                    _ => self.fill(0..len),
+                    _ => {
+                        self.fill(0..len);
+                        self.wrapped.iter_mut().for_each(|w| *w = false);
+                    }
                 }
             }
             'K' => {
@@ -418,7 +592,33 @@ impl Perform for Screen {
                 match p.first().copied().unwrap_or(0) {
                     0 => self.fill(row + self.cx..row + self.cols),
                     1 => self.fill(row..row + self.cx + 1),
-                    _ => self.fill(row..row + self.cols),
+                    _ => {
+                        self.fill(row..row + self.cols);
+                        self.wrapped[self.cy] = false;
+                    }
+                }
+            }
+            'L' | 'M' if self.cy >= self.scroll_top && self.cy <= self.scroll_bottom => {
+                // Insert or delete lines at the cursor, within the scroll region.
+                let n = arg(0, 1).min(self.scroll_bottom - self.cy + 1);
+                for _ in 0..n {
+                    if action == 'L' {
+                        self.shift_down(self.cy, self.scroll_bottom);
+                    } else {
+                        self.shift_up(self.cy, self.scroll_bottom);
+                    }
+                }
+                self.cx = 0;
+            }
+            'r' if intermediates.is_empty() => {
+                // Set the scroll region (DECSTBM). Invalid regions are ignored.
+                let top = arg(0, 1) - 1;
+                let bottom = arg(1, self.rows) - 1;
+                if top < bottom && bottom < self.rows {
+                    self.scroll_top = top;
+                    self.scroll_bottom = bottom;
+                    self.cx = 0;
+                    self.cy = 0;
                 }
             }
             'm' => self.sgr(params),
@@ -441,11 +641,27 @@ impl Perform for Screen {
                 }
                 _ => {}
             },
-            'h' | 'l' if intermediates == [b'?'] && p.contains(&1049) => {
-                if action == 'h' {
-                    self.enter_alt_screen();
-                } else {
-                    self.leave_alt_screen();
+            'h' | 'l' if intermediates == [b'?'] => {
+                let set = action == 'h';
+                for &mode in &p {
+                    match mode {
+                        1049 => {
+                            if set {
+                                self.enter_alt_screen();
+                            } else {
+                                self.leave_alt_screen();
+                            }
+                        }
+                        1000 | 1002 | 1003 => {
+                            if set {
+                                self.mouse_tracking = mode as u16;
+                            } else if self.mouse_tracking == mode as u16 {
+                                self.mouse_tracking = 0;
+                            }
+                        }
+                        1006 => self.mouse_sgr = set,
+                        _ => {}
+                    }
                 }
             }
             _ => {} // other modes/sequences are accepted and ignored
@@ -456,7 +672,7 @@ impl Perform for Screen {
         match byte {
             b'7' => self.saved = (self.cx, self.cy),
             b'8' => (self.cx, self.cy) = self.saved,
-            b'M' => self.cy = self.cy.saturating_sub(1), // reverse index
+            b'M' => self.reverse_index(),
             _ => {}
         }
     }
@@ -599,5 +815,80 @@ mod tests {
         feed(&mut s, b"ab  \r\ncdef");
         assert_eq!(s.text_between((0, 0), (1, 2)), "ab\ncde");
         assert_eq!(s.text_between((1, 2), (0, 0)), "ab\ncde");
+    }
+
+    #[test]
+    fn copying_a_wrapped_line_has_no_newline() {
+        let mut s = Screen::new(3, 2);
+        feed(&mut s, b"abcdef\r\nxy");
+        // "abc" wrapped onto "def" (one logical line); "xy" is a separate line.
+        assert!(s.row_wrapped(0));
+        assert!(!s.row_wrapped(1));
+        assert_eq!(s.text_between((0, 0), (2, 2)), "abcdef\nxy");
+    }
+
+    #[test]
+    fn word_and_line_bounds() {
+        let mut s = Screen::new(10, 1);
+        feed(&mut s, b"foo bar_1");
+        assert_eq!(s.word_bounds(0, 5), ((0, 4), (0, 8)));
+        assert_eq!(s.word_bounds(0, 1), ((0, 0), (0, 2)));
+        assert_eq!(s.word_bounds(0, 3), ((0, 3), (0, 3)));
+
+        let mut w = Screen::new(3, 2);
+        feed(&mut w, b"abcdef\r\nxy");
+        assert_eq!(w.line_bounds(0), ((0, 0), (1, 2)));
+    }
+
+    #[test]
+    fn combining_marks_attach_to_the_previous_character() {
+        let mut s = Screen::new(3, 1);
+        feed(&mut s, "e\u{301}x".as_bytes());
+        assert_eq!(s.visible_cell(0, 0).mark, Some('\u{301}'));
+        assert_eq!(s.visible_cell(1, 0).ch, 'x');
+        assert_eq!(s.text_between((0, 0), (0, 2)), "e\u{301}x");
+    }
+
+    #[test]
+    fn reverse_index_at_top_scrolls_down() {
+        let mut s = Screen::new(3, 2);
+        feed(&mut s, b"aa\r\nbb\x1b[1;1H\x1bM");
+        assert_eq!(row(&s, 0), "   ");
+        assert_eq!(row(&s, 1), "aa ");
+    }
+
+    #[test]
+    fn scroll_region_confines_scrolling() {
+        let mut s = Screen::new(3, 4);
+        feed(&mut s, b"aaa\r\nbbb\r\nccc\r\nddd");
+        feed(&mut s, b"\x1b[2;3r\x1b[3;1H\n");
+        assert_eq!(row(&s, 0), "aaa");
+        assert_eq!(row(&s, 1), "ccc");
+        assert_eq!(row(&s, 2), "   ");
+        assert_eq!(row(&s, 3), "ddd");
+        assert_eq!(s.history.len(), 0);
+    }
+
+    #[test]
+    fn insert_and_delete_lines() {
+        let mut s = Screen::new(2, 3);
+        feed(&mut s, b"aa\r\nbb\r\ncc\x1b[2;1H\x1b[L");
+        assert_eq!(row(&s, 0), "aa");
+        assert_eq!(row(&s, 1), "  ");
+        assert_eq!(row(&s, 2), "bb");
+        feed(&mut s, b"\x1b[1;1H\x1b[M");
+        assert_eq!(row(&s, 0), "  ");
+        assert_eq!(row(&s, 1), "bb");
+    }
+
+    #[test]
+    fn mouse_modes_are_tracked() {
+        let mut s = Screen::new(3, 1);
+        feed(&mut s, b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(s.mouse_tracking(), 1002);
+        assert!(s.mouse_sgr());
+        feed(&mut s, b"\x1b[?1002l");
+        assert_eq!(s.mouse_tracking(), 0);
+        assert!(s.mouse_sgr());
     }
 }

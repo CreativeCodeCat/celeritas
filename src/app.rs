@@ -6,6 +6,7 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
+use std::time::{Duration, Instant};
 
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
@@ -70,6 +71,12 @@ pub struct App {
     cursor_pos: (f64, f64),
     selection: Option<Selection>,
     selecting: bool,
+    /// The last click: when, where (logical position) and how many in a row.
+    click: Option<(Instant, (usize, usize), u8)>,
+    /// The mouse button held down, as a report code, while reporting mouse events.
+    button_held: Option<u8>,
+    /// The last cell reported for mouse motion, so each cell is reported once.
+    last_report: Option<(usize, usize)>,
     screenshot: Option<PathBuf>,
     frames: u32,
 }
@@ -89,6 +96,9 @@ impl App {
             cursor_pos: (0.0, 0.0),
             selection: None,
             selecting: false,
+            click: None,
+            button_held: None,
+            last_report: None,
             screenshot,
             frames: 0,
         }
@@ -274,24 +284,41 @@ impl App {
         self.write(text.replace('\n', "\r").as_bytes());
     }
 
-    /// The logical (row, column) under the mouse pointer, clamped to the grid.
-    fn grid_position(&self) -> Option<(usize, usize)> {
+    /// The view cell (column, row) under the mouse pointer, clamped to the grid.
+    fn view_cell(&self) -> Option<(usize, usize)> {
         let gfx = self.gfx.as_ref()?;
         let fonts = &gfx.renderer.fonts;
         let col = (self.cursor_pos.0 as f32 / fonts.cell_width).floor().max(0.0) as usize;
         let row = (self.cursor_pos.1 as f32 / fonts.cell_height).floor().max(0.0) as usize;
-        Some((
-            self.screen.first_visible_row() + row.min(self.screen.rows - 1),
-            col.min(self.screen.cols - 1),
-        ))
+        Some((col.min(self.screen.cols - 1), row.min(self.screen.rows - 1)))
     }
 
-    fn start_selection(&mut self) {
-        if let Some(p) = self.grid_position() {
-            self.selection = Some(Selection { anchor: p, head: p });
-            self.selecting = true;
-            self.request_redraw();
-        }
+    /// The logical (row, column) under the mouse pointer.
+    fn grid_position(&self) -> Option<(usize, usize)> {
+        let (col, row) = self.view_cell()?;
+        Some((self.screen.first_visible_row() + row, col))
+    }
+
+    /// A left-button press. One click starts a drag selection; two select a word and
+    /// three select a line.
+    fn left_press(&mut self) {
+        let Some(p) = self.grid_position() else {
+            return;
+        };
+        let now = Instant::now();
+        let count = match self.click {
+            Some((at, last, n)) if last == p && now.duration_since(at) < Duration::from_millis(400) => n % 3 + 1,
+            _ => 1,
+        };
+        self.click = Some((now, p, count));
+        let (anchor, head) = match count {
+            1 => (p, p),
+            2 => self.screen.word_bounds(p.0, p.1),
+            _ => self.screen.line_bounds(p.0),
+        };
+        self.selection = Some(Selection { anchor, head });
+        self.selecting = count == 1;
+        self.request_redraw();
     }
 
     fn extend_selection(&mut self) {
@@ -303,6 +330,51 @@ impl App {
         }
     }
 
+    /// Whether mouse events go to the running program rather than to the selection.
+    /// Holding Shift keeps mouse selection and scrolling for the terminal.
+    fn reporting(&self) -> bool {
+        self.screen.mouse_tracking() != 0 && !self.mods.shift
+    }
+
+    /// Send one mouse report to the program. `code` is the button (0 left, 1 middle,
+    /// 2 right, 64 wheel up, 65 wheel down), plus 32 for motion. Columns and rows are
+    /// zero-based view cells.
+    fn report_mouse(&mut self, code: u8, col: usize, row: usize, release: bool) {
+        let bytes = if self.screen.mouse_sgr() {
+            let end = if release { 'm' } else { 'M' };
+            format!("\x1b[<{};{};{}{}", code, col + 1, row + 1, end).into_bytes()
+        } else {
+            // Legacy encoding: every value is offset by 32, and release is button 3.
+            let button = if release { 3 } else { code };
+            vec![
+                0x1b,
+                b'[',
+                b'M',
+                32 + button,
+                (32 + col + 1).min(255) as u8,
+                (32 + row + 1).min(255) as u8,
+            ]
+        };
+        self.write(&bytes);
+    }
+
+    /// Report pointer motion when the program asked for it (drags, or any motion).
+    fn report_motion(&mut self) {
+        let mode = self.screen.mouse_tracking();
+        let code = match self.button_held {
+            Some(held) if mode == 1002 || mode == 1003 => held + 32,
+            None if mode == 1003 => 35,
+            _ => return,
+        };
+        let Some((col, row)) = self.view_cell() else {
+            return;
+        };
+        if self.last_report != Some((col, row)) {
+            self.last_report = Some((col, row));
+            self.report_mouse(code, col, row, false);
+        }
+    }
+
     fn wheel(&mut self, delta: MouseScrollDelta) {
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, y) => (y * WHEEL_LINES).round() as isize,
@@ -311,10 +383,20 @@ impl App {
                 (p.y / cell_height).round() as isize
             }
         };
-        if lines != 0 {
-            self.screen.scroll_view(lines);
-            self.request_redraw();
+        if lines == 0 {
+            return;
         }
+        if self.reporting() {
+            if let Some((col, row)) = self.view_cell() {
+                let code = if lines > 0 { 64 } else { 65 };
+                for _ in 0..lines.unsigned_abs().min(WHEEL_LINES as usize) {
+                    self.report_mouse(code, col, row, false);
+                }
+            }
+            return;
+        }
+        self.screen.scroll_view(lines);
+        self.request_redraw();
     }
 }
 
@@ -360,14 +442,33 @@ impl ApplicationHandler<()> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
-                if self.selecting {
+                if self.reporting() {
+                    self.report_motion();
+                } else if self.selecting {
                     self.extend_selection();
                 }
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {
-                ElementState::Pressed => self.start_selection(),
-                ElementState::Released => self.selecting = false,
-            },
+            WindowEvent::MouseInput { state, button, .. } => {
+                let code = match button {
+                    MouseButton::Left => 0,
+                    MouseButton::Middle => 1,
+                    MouseButton::Right => 2,
+                    _ => return,
+                };
+                if self.reporting() {
+                    if let Some((col, row)) = self.view_cell() {
+                        let pressed = state == ElementState::Pressed;
+                        self.button_held = pressed.then_some(code);
+                        self.last_report = None;
+                        self.report_mouse(code, col, row, !pressed);
+                    }
+                } else if button == MouseButton::Left {
+                    match state {
+                        ElementState::Pressed => self.left_press(),
+                        ElementState::Released => self.selecting = false,
+                    }
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             _ => {}
         }

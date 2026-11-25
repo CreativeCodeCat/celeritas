@@ -228,18 +228,22 @@ impl Renderer {
 
                 // '\0' is the right half of a wide character; its glyph is drawn by the left half.
                 if cell.ch != ' ' && cell.ch != '\0' {
-                    if let Some(glyph) = self.glyph(cell.ch, FaceStyle::new(cell.bold, cell.italic)) {
-                        if glyph.width > 0.0 && glyph.height > 0.0 {
-                            push_quad(
-                                &mut self.vertices,
-                                px + glyph.left,
-                                py + baseline - glyph.top,
-                                glyph.width,
-                                glyph.height,
-                                glyph.uv,
-                                rgba(fg, 1.0),
-                                MODE_GLYPH,
-                            );
+                    let style = FaceStyle::new(cell.bold, cell.italic);
+                    // A combining mark is drawn over its base character, at the same origin.
+                    for ch in std::iter::once(cell.ch).chain(cell.mark) {
+                        if let Some(glyph) = self.glyph(ch, style) {
+                            if glyph.width > 0.0 && glyph.height > 0.0 {
+                                push_quad(
+                                    &mut self.vertices,
+                                    px + glyph.left,
+                                    py + baseline - glyph.top,
+                                    glyph.width,
+                                    glyph.height,
+                                    glyph.uv,
+                                    rgba(fg, 1.0),
+                                    MODE_GLYPH,
+                                );
+                            }
                         }
                     }
                 }
