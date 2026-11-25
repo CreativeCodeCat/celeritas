@@ -3,6 +3,7 @@ name = "celeritas"
 version = "0.1.0"
 edition = "2021"
 description = "A minimal terminal emulator written in Rust"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 eframe = "0.37.0"

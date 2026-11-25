@@ -1,45 +1,73 @@
 # celeritas
 
-A minimal terminal emulator in Rust, with its own window (no host terminal needed).
+A minimal terminal emulator written in Rust. It opens its own window and runs your shell inside it, so it doesn't need another terminal.
 
-How it works:
+## Features
 
-1. **PTY** (`portable-pty`): spawns your `$SHELL` inside a pseudo-terminal so it behaves as if it were attached to a real terminal.
-2. **Reader thread**: reads the shell's output and sends it over a channel.
-3. **Parser** (`vte`): decodes ANSI/VT escape sequences (cursor moves, colours, erase, ...).
-4. **Screen** (`src/screen.rs`): a grid of cells + cursor that the parser writes into. It also answers the shell's terminal queries (device attributes, cursor position).
-5. **Window** (`eframe`/`egui`, `src/gui.rs`): draws the grid every frame and translates key presses and clipboard paste into bytes written back to the PTY. Ctrl-C copies nothing; it sends the interrupt byte to the shell.
+- Runs your `$SHELL` in a pseudo-terminal (PTY) and draws its output in a window
+- Handles the common ANSI/VT escape codes: cursor movement, erase, 16 and 256 colours, truecolour, and the alternate screen
+- Answers the terminal queries shells send at startup (for example, fish's device-attributes probe)
+- Clipboard paste with Ctrl-V; Ctrl-C is sent to the shell as an interrupt
+- Configured with a Lua file: window size and title, font size, colours, shell, working directory and environment variables
 
-## Run
+## How it works
+
+1. **PTY** (`portable-pty`, `src/main.rs`): spawns your shell attached to a pseudo-terminal.
+2. **Reader thread** (`src/main.rs`): reads the shell's output and sends it over a channel to the UI.
+3. **Parser** (`vte`, `src/screen.rs`): decodes escape sequences and updates the screen model.
+4. **Screen** (`src/screen.rs`): a grid of cells plus the cursor. It also builds replies to the shell's queries.
+5. **Window** (`eframe` / `egui`, `src/gui.rs`): draws the grid every frame and turns key presses and paste into bytes written back to the PTY.
+6. **Config** (`mlua`, `src/config.rs`): reads the Lua configuration at startup.
+
+## Requirements
+
+- Linux with a Wayland or X11 desktop
+- A Rust toolchain (`cargo`), from [rustup](https://rustup.rs)
+- A C compiler (the Lua interpreter is built from source)
+- `make` (optional, for the install targets)
+
+## Build and run
 
     cargo run --release
 
-Or install it (targets are listed in the Makefile header):
-
-    make install-desktop
-
 Close the window to quit.
+
+## Install
+
+    make install               # binary to ~/.local/bin/celeritas
+    make install-desktop       # also adds an app-menu launcher
+    make uninstall             # removes both
+    make install PREFIX=/usr/local   # system-wide (may need sudo)
 
 ## Configuration
 
-Settings live in `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME/celeritas/`). The file is Lua and returns a table laid out like Alacritty's config. Anything missing uses the built-in default. Supported settings:
+Settings are read from `~/.config/celeritas/celeritas.lua` (or `$XDG_CONFIG_HOME/celeritas/celeritas.lua`). If the file doesn't exist, celeritas creates it with the default settings on first launch. The file is Lua and returns a table laid out like Alacritty's config. Anything you leave out uses the built-in default. A broken file prints an error and falls back to the defaults.
+
+Supported settings:
 
 - `env`: extra environment variables for the shell
 - `shell`: the shell to run (default `$SHELL`)
-- `window`: `title`, `decorations`, `dimensions.columns`/`lines` (the starting size; a tiling window manager may resize it)
+- `window`: `title`, `decorations`, and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
 - `font.size`
-- `colors`: `primary.background`/`foreground`, `normal`/`bright` ANSI colours, `draw_bold_text_with_bright_colors`
+- `colors`: `primary.background` / `foreground`, the `normal` and `bright` ANSI colours, and `draw_bold_text_with_bright_colors`
 - `general.working_directory`
 
-Other Alacritty options (scrollback, key bindings, cursor style, opacity, font families) are not supported.
+Colours are written as `0xRRGGBB` or `#RRGGBB`. Because the file is Lua code, it runs with your user's permissions.
+
+The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 
 ## Limitations
 
-This is a learning-sized emulator, not a replacement for kitty/alacritty:
+This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
-- No scrollback, no scroll regions, no mouse support, no text selection
-- Bold is shown as bright colours, not a bold font
-- Fonts come from egui's built-in set, so some symbol glyphs (e.g. Nerd Font icons) show as boxes
-- Wide (CJK/emoji) characters are treated as one column wide
-- The alternate screen is simulated (cleared), not kept as a separate buffer
-- Only the common SGR colour/style codes are supported
+- No scrollback, scroll regions, mouse support, or text selection
+- Bold text is drawn in the bright colours, not with a bold font
+- Fonts come from egui's built-in set, so some symbol glyphs (such as Nerd Font icons) show as boxes
+- Wide (CJK and emoji) characters take one column
+- The alternate screen is simulated by clearing the grid, not kept as a separate buffer
+- Only the common SGR colour and style codes are supported
+- Unsupported Alacritty options (key bindings, cursor style, opacity, font families) are ignored
+
+## License
+
+celeritas is free software, released under the [GNU General Public License v3.0 or later](LICENSE). You can redistribute it and/or modify it under those terms. It comes with no warranty.
