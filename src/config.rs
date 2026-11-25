@@ -115,6 +115,12 @@ pub struct Config {
     pub class: Option<(String, String)>,
     /// Program to run instead of the shell, from `-e`. Empty means the shell.
     pub command: Vec<String>,
+    /// Lines scrolled per mouse-wheel notch (`scrolling.multiplier`).
+    pub scroll_lines: usize,
+    /// Hide the mouse pointer while typing (`mouse.hide_when_typing`).
+    pub hide_mouse_when_typing: bool,
+    /// Copy a selection to the clipboard as soon as it is dragged out (`selection.save_to_clipboard`).
+    pub save_selection_to_clipboard: bool,
 }
 
 impl Default for Config {
@@ -160,6 +166,9 @@ impl Default for Config {
             bindings: Vec::new(),
             class: Some(("Celeritas".to_string(), "Celeritas".to_string())),
             command: Vec::new(),
+            scroll_lines: 3,
+            hide_mouse_when_typing: false,
+            save_selection_to_clipboard: false,
         }
     }
 }
@@ -283,6 +292,16 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
                 config.lines = lines.max(1);
             }
         }
+        if let Some(class) = window.get::<Option<Table>>("class")? {
+            let instance = class.get::<Option<String>>("instance")?;
+            let general = class.get::<Option<String>>("general")?;
+            match (instance, general) {
+                (Some(instance), Some(general)) => config.class = Some((instance, general)),
+                // One name given: use it for both, as Alacritty does.
+                (Some(name), None) | (None, Some(name)) => config.class = Some((name.clone(), name)),
+                (None, None) => {}
+            }
+        }
     }
 
     if let Some(font) = root.get::<Option<Table>>("font")? {
@@ -304,6 +323,21 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     if let Some(scrolling) = root.get::<Option<Table>>("scrolling")? {
         if let Some(history) = scrolling.get::<Option<usize>>("history")? {
             config.scrollback = history;
+        }
+        if let Some(multiplier) = scrolling.get::<Option<usize>>("multiplier")? {
+            config.scroll_lines = multiplier.max(1);
+        }
+    }
+
+    if let Some(mouse) = root.get::<Option<Table>>("mouse")? {
+        if let Some(hide) = mouse.get::<Option<bool>>("hide_when_typing")? {
+            config.hide_mouse_when_typing = hide;
+        }
+    }
+
+    if let Some(selection) = root.get::<Option<Table>>("selection")? {
+        if let Some(save) = selection.get::<Option<bool>>("save_to_clipboard")? {
+            config.save_selection_to_clipboard = save;
         }
     }
 
@@ -572,5 +606,21 @@ mod tests {
     fn unknown_options_are_errors() {
         assert!(args(&["--nope"]).is_err());
         assert!(args(&["--title"]).is_err());
+    }
+
+    #[test]
+    fn reads_mouse_selection_scrolling_and_class() {
+        let c = parse(
+            "return { scrolling = { multiplier = 5 }, mouse = { hide_when_typing = true }, \
+             selection = { save_to_clipboard = true }, window = { class = { instance = 'a', general = 'b' } } }",
+        )
+        .unwrap();
+        assert_eq!(c.scroll_lines, 5);
+        assert!(c.hide_mouse_when_typing);
+        assert!(c.save_selection_to_clipboard);
+        assert_eq!(c.class, Some(("a".to_string(), "b".to_string())));
+
+        let c = parse("return { window = { class = { general = 'only' } } }").unwrap();
+        assert_eq!(c.class, Some(("only".to_string(), "only".to_string())));
     }
 }

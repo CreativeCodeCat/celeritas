@@ -37,8 +37,6 @@ fn debug_enabled() -> bool {
     std::env::var_os("CELERITAS_DEBUG").is_some()
 }
 
-/// Lines moved per mouse-wheel notch.
-const WHEEL_LINES: f32 = 3.0;
 /// With `CELERITAS_SCREENSHOT` set, the window saves its first frame after this many redraws.
 const SCREENSHOT_FRAME: u32 = 10;
 /// The shortest time between two frames, so output is drawn at most 60 times a second.
@@ -212,6 +210,13 @@ impl App {
         }
     }
 
+    /// Show or hide the mouse pointer over the window.
+    fn set_pointer_visible(&self, visible: bool) {
+        if let Some(gfx) = &self.gfx {
+            gfx.window.set_cursor_visible(visible);
+        }
+    }
+
     fn request_redraw(&self) {
         if let Some(gfx) = &self.gfx {
             gfx.window.request_redraw();
@@ -338,6 +343,9 @@ impl App {
         }
         let m = self.mods;
         let is_char = |want: &str| matches!(key, Key::Character(c) if c.eq_ignore_ascii_case(want));
+        if self.config.hide_mouse_when_typing {
+            self.set_pointer_visible(false);
+        }
 
         if m.ctrl && m.shift && is_char("c") {
             self.copy_selection();
@@ -499,7 +507,7 @@ impl App {
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
         let lines = match delta {
-            MouseScrollDelta::LineDelta(_, y) => (y * WHEEL_LINES).round() as isize,
+            MouseScrollDelta::LineDelta(_, y) => (y * self.config.scroll_lines as f32).round() as isize,
             MouseScrollDelta::PixelDelta(p) => {
                 let cell_height = self.gfx.as_ref().map_or(1.0, |g| g.renderer.fonts.cell_height as f64);
                 (p.y / cell_height).round() as isize
@@ -511,7 +519,7 @@ impl App {
         if self.reporting() {
             if let Some((col, row)) = self.view_cell() {
                 let code = if lines > 0 { 64 } else { 65 };
-                for _ in 0..lines.unsigned_abs().min(WHEEL_LINES as usize) {
+                for _ in 0..lines.unsigned_abs().min(self.config.scroll_lines) {
                     self.report_mouse(code, col, row, false);
                 }
             }
@@ -605,6 +613,9 @@ impl ApplicationHandler<()> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
+                if self.config.hide_mouse_when_typing {
+                    self.set_pointer_visible(true);
+                }
                 if self.reporting() {
                     self.report_motion();
                 } else if self.selecting {
@@ -628,7 +639,14 @@ impl ApplicationHandler<()> for App {
                 } else if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => self.left_press(),
-                        ElementState::Released => self.selecting = false,
+                        ElementState::Released => {
+                            self.selecting = false;
+                            // Only a drag over more than one cell counts as a selection to save.
+                            let dragged = self.selection.and_then(|s| s.range()).is_some_and(|(a, b)| a != b);
+                            if self.config.save_selection_to_clipboard && dragged {
+                                self.copy_selection();
+                            }
+                        }
                     }
                 }
             }

@@ -64,8 +64,11 @@ Supported settings:
 
 - `env`: extra environment variables for the shell
 - `scrolling.history`: lines of scrollback kept (default 10000; 0 turns it off)
+- `scrolling.multiplier`: lines scrolled per mouse-wheel notch (default 3)
 - `shell`: the shell to run (default `$SHELL`)
-- `window`: `title`, `decorations`, `opacity` (0.0 to 1.0; only the default background becomes see-through), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
+- `window`: `title`, `decorations`, `opacity` (0.0 to 1.0; only the default background becomes see-through), `class` (`instance` and `general`, the names window-manager rules match), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
+- `mouse.hide_when_typing`: hide the mouse pointer while typing, and show it again when the mouse moves
+- `selection.save_to_clipboard`: copy a selection to the clipboard as soon as it is dragged out
 - `cursor.style`: `"Block"`, `"Underline"` or `"Beam"`
 - `keyboard.bindings`: a list of `{ key, mods, action }` or `{ key, mods, chars }` entries. Actions are Copy, Paste, ScrollPageUp, ScrollPageDown, ScrollLineUp, ScrollLineDown, ScrollToTop, ScrollToBottom and None (swallow the key). `chars` sends the given text. Later entries take precedence over the built-in keys
 - `font.size`
@@ -81,7 +84,7 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 This is a learning-sized emulator, not a replacement for kitty or alacritty:
 
 - Italic text is slanted in software when no italic face is installed. Install an italic version of your font and set `font.italic` to use it
-- Only the Alacritty options listed above are read; others are ignored
+- These Alacritty options are not supported yet and are ignored: `cursor.unfocused_hollow`, `cursor.thickness`, `cursor.vi_mode_style`, `selection.semantic_escape_chars`, `window.dynamic_padding`, `window.decorations_theme_variant`, `general.live_config_reload`, and `mouse.bindings` (so middle-click paste does not work yet)
 - Other terminal modes are accepted and ignored. Mouse tracking (1000, 1002, 1003) and encodings (1005, 1006, 1015), focus reporting (1004), bracketed paste (2004), application cursor keys (1) and cursor visibility (25) are supported
 
 ## License
