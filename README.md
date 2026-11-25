@@ -67,7 +67,7 @@ Supported settings:
 - `scrolling.history`: lines of scrollback kept (default 10000; 0 turns it off)
 - `scrolling.multiplier`: lines scrolled per mouse-wheel notch (default 3)
 - `shell`: the shell to run (default `$SHELL`)
-- `window`: `title`, `decorations`, `opacity` (0.0 to 1.0; only the default background becomes see-through), `class` (`instance` and `general`, the names window-manager rules match), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
+- `window`: `title`, `decorations`, `decorations_theme_variant` (`"Dark"` or `"Light"`), `opacity` (0.0 to 1.0; only the default background becomes see-through), `class` (`instance` and `general`, the names window-manager rules match), and `dimensions.columns` / `lines` (the starting size; a tiling window manager may resize the window)
 - `mouse.hide_when_typing`: hide the mouse pointer while typing, and show it again when the mouse moves
 - `mouse.bindings`: the middle button, as `{ mouse = "Middle", action = ... }` with action `PasteSelection` (the default), `Paste` or `None`. Selecting text by dragging sets the primary selection
 - `selection.save_to_clipboard`: copy a selection to the clipboard as soon as it is dragged out
@@ -79,6 +79,7 @@ Supported settings:
 - `font.size`
 - `colors`: `primary.background` / `foreground`, the `normal` and `bright` ANSI colours, and `draw_bold_text_with_bright_colors`
 - `general.working_directory`
+- `general.live_config_reload`: when the file changes, it is read again within a second and most settings apply at once (default `true`). The font, the window size and whether the window is transparent need a restart. `shell`, `env` and `working_directory` apply to the next shell started
 
 Colours are written as `0xRRGGBB` or `#RRGGBB`. Because the file is Lua code, it runs with your user's permissions.
 
@@ -89,7 +90,8 @@ The default configuration is in [`dist/celeritas.lua`](dist/celeritas.lua).
 This is a learning-sized emulator, not a full-featured terminal:
 
 - Italic text is slanted in software when no italic face is installed. Install an italic version of your font and set `font.italic` to use it
-- These options are not supported yet and are ignored: `cursor.vi_mode_style`, `window.dynamic_padding`, `window.decorations_theme_variant` and `general.live_config_reload`
+- `window.dynamic_padding` is not supported yet, because celeritas has no window padding. It is ignored
+- `cursor.vi_mode_style` has no effect, because celeritas has no vi mode
 - Other terminal modes are accepted and ignored
 
 ## License

@@ -34,7 +34,8 @@ fn set_process_name() {
 fn main() -> Result<(), Box<dyn Error>> {
     set_process_name();
     let mut config = Config::load();
-    if let Err(e) = config.apply_args(std::env::args().skip(1)) {
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Err(e) = config.apply_args(cli_args.iter().cloned()) {
         eprintln!("celeritas: {e}");
         std::process::exit(2);
     }
@@ -43,7 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Developer aid: save one frame to this path (binary PPM) and exit.
     let screenshot = std::env::var_os("CELERITAS_SCREENSHOT").map(PathBuf::from);
 
-    let mut app = App::new(config, pty, screenshot);
+    let mut app = App::new(config, pty, screenshot, cli_args);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

@@ -6,7 +6,7 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
@@ -39,6 +39,8 @@ fn debug_enabled() -> bool {
 
 /// With `CELERITAS_SCREENSHOT` set, the window saves its first frame after this many redraws.
 const SCREENSHOT_FRAME: u32 = 10;
+/// How often the configuration file is checked for changes.
+const CONFIG_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// The shortest time between two frames, so output is drawn at most 60 times a second.
 const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 /// How long one pass over the shell's output may take before the window gets a turn.
@@ -107,17 +109,30 @@ pub struct App {
     redraw_deferred: bool,
     /// Whether the window has keyboard focus.
     focused: bool,
+    /// Command-line options, re-applied on top of the configuration file when it is reloaded.
+    cli_args: Vec<String>,
+    /// The configuration file, and its modification time when it was last read.
+    config_file: Option<PathBuf>,
+    config_seen: Option<SystemTime>,
+    /// When the configuration file is next checked for changes.
+    next_config_check: Instant,
     /// The shell has more output waiting than one pump could read.
     pty_busy: bool,
 }
 
 impl App {
-    pub fn new(config: Config, pty: Pty, screenshot: Option<PathBuf>) -> App {
+    pub fn new(config: Config, pty: Pty, screenshot: Option<PathBuf>, cli_args: Vec<String>) -> App {
         let mut screen = Screen::new(config.columns, config.lines);
         screen.set_history_limit(config.scrollback);
         screen.set_word_separators(&config.semantic_escape_chars);
+        let config_file = crate::config::config_path();
+        let config_seen = config_file.as_ref().and_then(|p| fs::metadata(p).ok()).and_then(|m| m.modified().ok());
         App {
             config,
+            cli_args,
+            config_file,
+            config_seen,
+            next_config_check: Instant::now() + CONFIG_CHECK_INTERVAL,
             pty,
             screen,
             parser: vte::Parser::new(),
@@ -151,7 +166,8 @@ impl App {
             .with_title(self.config.title.clone())
             .with_inner_size(size)
             .with_decorations(self.config.decorations)
-            .with_transparent(self.config.opacity < 1.0);
+            .with_transparent(self.config.opacity < 1.0)
+            .with_theme(self.config.decorations_theme);
         // X11 uses the instance and general names as WM_CLASS; Wayland uses the general
         // name as the app id. Window-manager rules match on these.
         if let Some((instance, general)) = &self.config.class {
@@ -212,6 +228,65 @@ impl App {
                 Err(TryRecvError::Empty) => return Pumped::Idle,
             }
         }
+    }
+
+    /// Re-read the configuration file if it has changed (`general.live_config_reload`).
+    fn check_config(&mut self) {
+        self.next_config_check = Instant::now() + CONFIG_CHECK_INTERVAL;
+        let Some(path) = self.config_file.clone() else {
+            return;
+        };
+        let modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if modified == self.config_seen {
+            return;
+        }
+        self.config_seen = modified;
+        match crate::config::load_file(&path) {
+            Ok(mut new) => {
+                if let Err(e) = new.apply_args(self.cli_args.clone()) {
+                    eprintln!("celeritas: {e}");
+                }
+                self.apply_config(new);
+            }
+            Err(e) => eprintln!("celeritas: {}: {e}", path.display()),
+        }
+    }
+
+    /// Use a newly read configuration. Settings that are fixed when the window is made (font,
+    /// size, and whether the window is transparent) keep their current values.
+    fn apply_config(&mut self, mut new: Config) {
+        let fixed_changed = new.faces != self.config.faces
+            || new.font_size != self.config.font_size
+            || new.columns != self.config.columns
+            || new.lines != self.config.lines
+            || (new.opacity < 1.0) != (self.config.opacity < 1.0);
+        if fixed_changed {
+            eprintln!("celeritas: font, size and transparency changes take effect after a restart");
+        }
+        new.faces = self.config.faces.clone();
+        new.font_size = self.config.font_size;
+        new.columns = self.config.columns;
+        new.lines = self.config.lines;
+        if (new.opacity < 1.0) != (self.config.opacity < 1.0) {
+            new.opacity = self.config.opacity;
+        }
+
+        if let Some(gfx) = self.gfx.as_mut() {
+            if new.title != self.config.title {
+                gfx.window.set_title(&new.title);
+            }
+            if new.decorations != self.config.decorations {
+                gfx.window.set_decorations(new.decorations);
+            }
+            if new.decorations_theme != self.config.decorations_theme {
+                gfx.window.set_theme(new.decorations_theme);
+            }
+            gfx.renderer.opacity = new.opacity;
+        }
+        self.screen.set_history_limit(new.scrollback);
+        self.screen.set_word_separators(&new.semantic_escape_chars);
+        self.config = new;
+        self.request_redraw();
     }
 
     /// Show or hide the mouse pointer over the window.
@@ -578,21 +653,32 @@ impl ApplicationHandler<()> for App {
             // Output arrived, so the screen may have changed.
             self.redraw_deferred = true;
         }
-        if !self.redraw_deferred {
-            return;
+        if Instant::now() >= self.next_config_check {
+            self.check_config();
         }
-        let due = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
-        if Instant::now() >= due {
-            self.redraw_deferred = false;
-            self.redraw(event_loop);
+        if self.redraw_deferred {
+            let due = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
+            if Instant::now() >= due {
+                self.redraw_deferred = false;
+                self.redraw(event_loop);
+            }
         }
         if self.pty_busy {
             event_loop.set_control_flow(ControlFlow::Poll);
-        } else if self.redraw_deferred {
+            return;
+        }
+        // Sleep until the next held-back frame is due, or the next configuration check.
+        let mut wake = self.config.live_config_reload.then_some(self.next_config_check);
+        if self.redraw_deferred {
             let next = self.last_frame.map_or_else(Instant::now, |last| last + FRAME_INTERVAL);
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            wake = Some(wake.map_or(next, |w| w.min(next)));
+        }
+        match wake {
+            Some(when) => event_loop.set_control_flow(ControlFlow::WaitUntil(when)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {

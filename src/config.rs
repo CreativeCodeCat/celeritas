@@ -140,6 +140,10 @@ pub struct Config {
     pub semantic_escape_chars: String,
     /// What the middle mouse button does (`mouse.bindings`).
     pub middle_click: MiddleClick,
+    /// Re-read the configuration file when it changes (`general.live_config_reload`).
+    pub live_config_reload: bool,
+    /// Light or dark window decorations; `None` follows the system (`window.decorations_theme_variant`).
+    pub decorations_theme: Option<winit::window::Theme>,
 }
 
 impl Default for Config {
@@ -192,6 +196,8 @@ impl Default for Config {
             cursor_unfocused_hollow: true,
             semantic_escape_chars: ",│`|:\"' ()[]{}<>\t".to_string(),
             middle_click: MiddleClick::PasteSelection,
+            live_config_reload: true,
+            decorations_theme: None,
         }
     }
 }
@@ -255,7 +261,7 @@ impl Config {
 }
 
 /// `$XDG_CONFIG_HOME/celeritas/celeritas.lua`, falling back to `~/.config/...`.
-fn config_path() -> Option<PathBuf> {
+pub fn config_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -272,7 +278,8 @@ fn write_default(path: &PathBuf) -> io::Result<()> {
     file.write_all(DEFAULT_CONFIG.as_bytes())
 }
 
-fn load_file(path: &PathBuf) -> Result<Config, Box<dyn Error>> {
+/// Read and parse a configuration file.
+pub fn load_file(path: &PathBuf) -> Result<Config, Box<dyn Error>> {
     parse(&fs::read_to_string(path)?)
 }
 
@@ -300,6 +307,13 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     if let Some(window) = root.get::<Option<Table>>("window")? {
         if let Some(title) = window.get::<Option<String>>("title")? {
             config.title = title;
+        }
+        if let Some(variant) = window.get::<Option<String>>("decorations_theme_variant")? {
+            config.decorations_theme = match variant.to_ascii_lowercase().as_str() {
+                "dark" => Some(winit::window::Theme::Dark),
+                "light" => Some(winit::window::Theme::Light),
+                other => return Err(format!("unknown decorations theme {other:?}").into()),
+            };
         }
         if let Some(decorations) = window.get::<Option<bool>>("decorations")? {
             config.decorations = decorations;
@@ -410,6 +424,9 @@ fn parse(source: &str) -> Result<Config, Box<dyn Error>> {
     if let Some(general) = root.get::<Option<Table>>("general")? {
         if let Some(dir) = general.get::<Option<String>>("working_directory")? {
             config.working_directory = Some(PathBuf::from(dir));
+        }
+        if let Some(live) = general.get::<Option<bool>>("live_config_reload")? {
+            config.live_config_reload = live;
         }
     }
 
@@ -627,6 +644,15 @@ mod tests {
         let mut config = Config::default();
         config.apply_args(list.iter().map(|s| s.to_string()))?;
         Ok(config)
+    }
+
+    #[test]
+    fn reads_theme_and_live_reload() {
+        let c = parse("return { window = { decorations_theme_variant = 'Dark' }, general = { live_config_reload = false } }")
+            .unwrap();
+        assert_eq!(c.decorations_theme, Some(winit::window::Theme::Dark));
+        assert!(!c.live_config_reload);
+        assert!(parse("return { window = { decorations_theme_variant = 'Blue' } }").is_err());
     }
 
     #[test]
